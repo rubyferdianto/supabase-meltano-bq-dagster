@@ -4,6 +4,19 @@ env/
 __pycache__/
 *.env
 .env.*
+*.json
+
+# Ignore Dagster temporary files
+.tmp_dagster_home_*/
+.dagster/
+dagster_home/
+
+# Ignore dbt files with sensitive data
+bec_dbt/service-account-key.json
+bec_dbt/dsai-468212-key.json
+bec_dbt/logs/
+bec_dbt/target/
+bec_dbt/.user.yml
 
 # Ignore macOS system files
 .DS_Store

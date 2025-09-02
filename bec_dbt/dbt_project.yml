@@ -34,3 +34,15 @@ models:
     # Config indicated by + and applies to all files under models/example/
     example:
       +materialized: view
+    
+    # Staging models - typically views for source data preparation
+    staging:
+      +materialized: view
+    
+    # Marts models - final business-ready tables
+    marts:
+      +materialized: table
+      dimensions:
+        +materialized: table
+      facts:
+        +materialized: table

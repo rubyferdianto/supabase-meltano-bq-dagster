@@ -31,7 +31,6 @@ from dagster import (
 
 class PipelineConfig(Config):
     """Configuration for the pipeline"""
-    csv_directory: str = "../bec-aws-bq/csv-source-file"  # Updated to correct path from DAGSTER folder
     staging_bigquery_dataset: str = os.getenv("TARGET_STAGING_DATASET", "bec_dataset")
     bigquery_dataset: str = os.getenv("TARGET_BIGQUERY_DATASET")
  
@@ -51,8 +50,8 @@ def _1_staging_to_bigquery(config: PipelineConfig) -> Dict[str, Any]:
     logger.info("📋 Method: TRUNCATE existing tables + INSERT fresh data")
     
     # Meltano directory
-    meltano_dir = "/Applications/RF/NTU/SCTP in DSAI/s3-rds-bq-dagster/bec-meltano"
-    
+    meltano_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec-meltano"
+
     # Initialize collections for tracking
     all_table_names = []
     all_bq_tables = []
@@ -102,6 +101,9 @@ def _1_staging_to_bigquery(config: PipelineConfig) -> Dict[str, Any]:
             supabase_tables = [row[0] for row in cursor.fetchall()]
             cursor.close()
             conn.close()
+
+            # RUBY - INDICATOR FOR SUPABASE TO BIGQUERY
+            supabase_tables = False
             
             if supabase_tables:
                 logger.info(f"📊 Discovered {len(supabase_tables)} tables from Supabase via PostgreSQL: {supabase_tables}")
@@ -123,7 +125,7 @@ def _1_staging_to_bigquery(config: PipelineConfig) -> Dict[str, Any]:
         logger.info(f"🔄 Processing {len(supabase_tables)} Supabase tables for BigQuery STAGING transfer...")
         
         # Create detailed log file for Supabase transfer
-        supabase_log_file = "../bec-aws-bq/supabase_bq_staging_transfer.log"
+        supabase_log_file = "../supabase_bq_staging_transfer.log"
         logger.info(f"📝 Detailed Supabase staging transfer logs will be written to: {supabase_log_file}")
         
         try:
@@ -474,7 +476,1257 @@ def _1_staging_to_bigquery(config: PipelineConfig) -> Dict[str, Any]:
 
 
 @asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
-def _2_dbt_transform_staging_to_marts(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+def _2a_processing_dim_dates(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process and create dimension table for dates using dbt SQL file
+    
+    Creates dim_dates table using the separate SQL file with:
+    - date_sk (primary key - auto-incrementing)
+    - date_value (date not null)
+    - year, quarter, month, day_of_month, day_of_week (bigint)
+    - is_weekend (boolean)
+    - Additional attributes: day_name, month_name, week_of_year, is_business_day
+    
+    Args:
+        _1_staging_to_bigquery: Result from staging to BigQuery
+        
+    Returns:
+        Date dimension processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing dimension table: dim_dates using dbt SQL file")
+    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
+    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
+    
+    # dbt directory
+    dbt_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec_dbt"
+    
+    try:
+        # Load environment variables from .env file
+        load_dotenv('/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/.env')
+        
+        # Set environment variables for dbt
+        env_vars = os.environ.copy()
+        env_vars.update({
+            'TARGET_BIGQUERY_DATASET': config.bigquery_dataset,
+            'TARGET_STAGING_DATASET': config.staging_bigquery_dataset,
+            'BQ_PROJECT_ID': os.getenv('BQ_PROJECT_ID', 'dsai-468212'),  # Use existing BQ_PROJECT_ID from .env
+        })
+        
+        logger.info("🔄 Running dbt model: dim_dates...")
+        logger.info(f"Working directory: {dbt_dir}")
+        logger.info(f"Model file: models/marts/dimensions/dim_dates.sql")
+        logger.info(f"Target dataset: {config.bigquery_dataset}")
+        
+        # Execute dbt run for dim_datess model specifically
+        dbt_result = subprocess.run([
+            'bash', '-c', 
+            'eval "$(conda shell.bash hook)" && conda activate bec && dbt run --models dim_dates --no-version-check'
+        ],
+            capture_output=True,
+            text=True,
+            cwd=dbt_dir,
+            timeout=300,  # 5 minute timeout
+            env=env_vars
+        )
+        
+        if dbt_result.returncode != 0:
+            logger.error(f"❌ dbt dim_dates model failed with return code: {dbt_result.returncode}")
+            logger.error("📋 dbt error details:")
+            logger.error(f"🔍 dbt stdout:")
+            for line in dbt_result.stdout.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            logger.error(f"🔍 dbt stderr:")
+            for line in dbt_result.stderr.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            raise Exception(f"dbt dim_dates model failed: {dbt_result.stderr}")
+        
+        logger.info("✅ dbt dim_dates model completed successfully")
+        logger.info("📋 dbt run output:")
+        
+        # Parse dbt output to get information
+        output_lines = dbt_result.stdout.split('\n')
+        model_created = False
+        records_processed = 0
+        
+        for line in output_lines:
+            if 'dim_dates' in line and ('OK created' in line or 'OK' in line):
+                model_created = True
+                logger.info(f"   ✅ {line.strip()}")
+            elif 'rows affected' in line.lower():
+                try:
+                    # Try to extract row count from dbt output
+                    import re
+                    match = re.search(r'(\d+)', line)
+                    if match:
+                        records_processed = int(match.group(1))
+                except:
+                    pass
+        
+        if not model_created:
+            logger.warning("⚠️ Could not confirm dim_dates model creation from dbt output")
+        
+        # Verify the table was created in BigQuery
+        try:
+            import json
+            from google.cloud import bigquery
+            
+            credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if credentials_json:
+                credentials_info = json.loads(credentials_json)
+                project_id = credentials_info.get("project_id")
+                
+                client = bigquery.Client(project=project_id)
+                table_ref = client.get_table(f"{project_id}.{config.bigquery_dataset}.dim_dates")
+                actual_records = table_ref.num_rows
+                
+                logger.info(f"✅ Verified table in BigQuery: {actual_records:,} records")
+                records_processed = actual_records
+                
+                # Get schema info
+                schema_fields = [field.name for field in table_ref.schema]
+                logger.info(f"📋 Table schema: {', '.join(schema_fields)}")
+                
+        except Exception as verify_error:
+            logger.warning(f"⚠️ Could not verify table in BigQuery: {str(verify_error)}")
+            logger.info("💡 Table may still have been created successfully")
+        
+        result = {
+            "table_name": "dim_dates",
+            "status": "completed",
+            "records_processed": records_processed,
+            "source_dataset": config.staging_bigquery_dataset,
+            "target_dataset": config.bigquery_dataset,
+            "bq_table": f"{config.bigquery_dataset}.dim_dates",
+            "dbt_model": "dim_dates",
+            "sql_file": "models/marts/dimensions/dim_dates.sql",
+            "creation_method": "dbt SQL file",
+            "dbt_stdout": dbt_result.stdout[-500:] if dbt_result.stdout else ""
+        }
+        
+        logger.info("✅ Date dimension processing completed using dbt SQL file")
+        return result
+        
+    except subprocess.TimeoutExpired:
+        error_msg = "dbt dim_dates model timed out after 5 minutes"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = f"dbt dim_dates model execution failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+  
+
+# Update _2b_processing_dim_orders
+@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
+def _2b_processing_dim_orders(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process and create dimension table for orders using dbt SQL file
+    
+    Creates dim_orders table using the separate SQL file with:
+    - order_sk (primary key - auto-incrementing)
+    - order_id, customer_id, order_status (not null)
+    - order_purchase_timestamp, order_approved_at, order_delivered_carrier_date, order_delivered_customer_date, order_estimated_delivery_date
+    - Derived columns: order_year, order_month, order_day, delivery_days, is_delivered
+    
+    Args:
+        _1_staging_to_bigquery: Result from staging to BigQuery
+        
+    Returns:
+        Orders dimension processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing dimension table: dim_orders using dbt SQL file")
+    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
+    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
+    
+    # dbt directory
+    dbt_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec_dbt"
+    
+    try:
+        # Load environment variables from .env file
+        load_dotenv('/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/.env')
+        
+        # Set environment variables for dbt
+        env_vars = os.environ.copy()
+        env_vars.update({
+            'TARGET_BIGQUERY_DATASET': config.bigquery_dataset,
+            'TARGET_STAGING_DATASET': config.staging_bigquery_dataset,
+            'BQ_PROJECT_ID': os.getenv('BQ_PROJECT_ID', 'dsai-468212'),  # Use existing BQ_PROJECT_ID from .env
+        })
+        
+        logger.info("🔄 Running dbt model: dim_orders...")
+        logger.info(f"Working directory: {dbt_dir}")
+        logger.info(f"Model file: models/marts/dimensions/dim_orders.sql")
+        logger.info(f"Target dataset: {config.bigquery_dataset}")
+        
+        # Execute dbt run for dim_orders model specifically
+        dbt_result = subprocess.run([
+            'bash', '-c', 
+            'eval "$(conda shell.bash hook)" && conda activate bec && dbt run --models dim_orders --no-version-check'
+        ],
+            capture_output=True,
+            text=True,
+            cwd=dbt_dir,
+            timeout=300,  # 5 minute timeout
+            env=env_vars
+        )
+        
+        if dbt_result.returncode != 0:
+            logger.error(f"❌ dbt dim_orders model failed with return code: {dbt_result.returncode}")
+            logger.error("📋 dbt error details:")
+            logger.error(f"� dbt stdout:")
+            for line in dbt_result.stdout.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            logger.error(f"🔍 dbt stderr:")
+            for line in dbt_result.stderr.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            raise Exception(f"dbt dim_orders model failed: {dbt_result.stderr}")
+        
+        logger.info("✅ dbt dim_orders model completed successfully")
+        logger.info("📋 dbt run output:")
+        
+        # Parse dbt output to get information
+        output_lines = dbt_result.stdout.split('\n')
+        model_created = False
+        records_processed = 0
+        
+        for line in output_lines:
+            if 'dim_orders' in line and ('OK created' in line or 'OK' in line):
+                model_created = True
+                logger.info(f"   ✅ {line.strip()}")
+            elif 'rows affected' in line.lower():
+                try:
+                    # Try to extract row count from dbt output
+                    import re
+                    match = re.search(r'(\d+)', line)
+                    if match:
+                        records_processed = int(match.group(1))
+                except:
+                    pass
+        
+        if not model_created:
+            logger.warning("⚠️ Could not confirm dim_orders model creation from dbt output")
+        
+        # Verify the table was created in BigQuery
+        try:
+            import json
+            from google.cloud import bigquery
+            
+            credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if credentials_json:
+                credentials_info = json.loads(credentials_json)
+                project_id = credentials_info.get("project_id")
+                
+                client = bigquery.Client(project=project_id)
+                table_ref = client.get_table(f"{project_id}.{config.bigquery_dataset}.dim_orders")
+                actual_records = table_ref.num_rows
+                
+                logger.info(f"✅ Verified table in BigQuery: {actual_records:,} records")
+                records_processed = actual_records
+                
+                # Get schema info
+                schema_fields = [field.name for field in table_ref.schema]
+                logger.info(f"📋 Table schema: {', '.join(schema_fields)}")
+                
+        except Exception as verify_error:
+            logger.warning(f"⚠️ Could not verify table in BigQuery: {str(verify_error)}")
+            logger.info("💡 Table may still have been created successfully")
+        
+        result = {
+            "table_name": "dim_orders",
+            "status": "completed",
+            "records_processed": records_processed,
+            "source_dataset": config.staging_bigquery_dataset,
+            "target_dataset": config.bigquery_dataset,
+            "bq_table": f"{config.bigquery_dataset}.dim_orders",
+            "dbt_model": "dim_orders",
+            "sql_file": "models/marts/dimensions/dim_orders.sql",
+            "creation_method": "dbt SQL file",
+            "dbt_stdout": dbt_result.stdout[-500:] if dbt_result.stdout else ""
+        }
+        
+        logger.info("✅ Orders dimension processing completed using dbt SQL file")
+        return result
+        
+    except subprocess.TimeoutExpired:
+        error_msg = "dbt dim_orders model timed out after 5 minutes"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = f"dbt dim_orders model execution failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+
+
+@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
+def _2c_processing_dim_products(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process and create dimension table for products using dbt SQL file
+    
+    Creates dim_products table using the separate SQL file with:
+    - product_sk (primary key - auto-incrementing)
+    - product_id (not null), product_category_name, product_category_name_english
+    - product_name_lenght, product_description_lenght, product_photos_qty
+    - product_weight_g, product_length_cm, product_height_cm, product_width_cm
+    - Derived columns: product_weight_kg, product_volume_cm3, photo_quality_category
+    
+    Args:
+        _1_staging_to_bigquery: Result from staging to BigQuery
+        
+    Returns:
+        Products dimension processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing dimension table: dim_products using dbt SQL file")
+    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
+    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
+    
+    # dbt directory
+    dbt_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec_dbt"
+
+    try:
+        # Load environment variables from .env file
+        load_dotenv('/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/.env')
+
+        # Set environment variables for dbt
+        env_vars = os.environ.copy()
+        env_vars.update({
+            'TARGET_BIGQUERY_DATASET': config.bigquery_dataset,
+            'TARGET_STAGING_DATASET': config.staging_bigquery_dataset,
+            'BQ_PROJECT_ID': os.getenv('BQ_PROJECT_ID', 'dsai-468212'),  # Use existing BQ_PROJECT_ID from .env
+        })
+        
+        logger.info("🔄 Running dbt model: dim_products...")
+        logger.info(f"Working directory: {dbt_dir}")
+        logger.info(f"Model file: models/marts/dimensions/dim_products.sql")
+        logger.info(f"Target dataset: {config.bigquery_dataset}")
+        
+        # Execute dbt run for dim_products model specifically
+        dbt_result = subprocess.run([
+            'bash', '-c', 
+            'eval "$(conda shell.bash hook)" && conda activate bec && dbt run --models dim_products --no-version-check'
+        ],
+            capture_output=True,
+            text=True,
+            cwd=dbt_dir,
+            timeout=300,  # 5 minute timeout
+            env=env_vars
+        )
+        
+        if dbt_result.returncode != 0:
+            logger.error(f"❌ dbt dim_products model failed with return code: {dbt_result.returncode}")
+            logger.error("📋 dbt error details:")
+            logger.error(f"🔍 dbt stdout:")
+            for line in dbt_result.stdout.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            logger.error(f"🔍 dbt stderr:")
+            for line in dbt_result.stderr.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            raise Exception(f"dbt dim_products model failed: {dbt_result.stderr}")
+        
+        logger.info("✅ dbt dim_products model completed successfully")
+        logger.info("📋 dbt run output:")
+        
+        # Parse dbt output to get information
+        output_lines = dbt_result.stdout.split('\n')
+        model_created = False
+        records_processed = 0
+        
+        for line in output_lines:
+            if 'dim_products' in line and ('OK created' in line or 'OK' in line):
+                model_created = True
+                logger.info(f"   ✅ {line.strip()}")
+            elif 'rows affected' in line.lower():
+                try:
+                    # Try to extract row count from dbt output
+                    import re
+                    match = re.search(r'(\d+)', line)
+                    if match:
+                        records_processed = int(match.group(1))
+                except:
+                    pass
+        
+        if not model_created:
+            logger.warning("⚠️ Could not confirm dim_products model creation from dbt output")
+        
+        # Verify the table was created in BigQuery
+        try:
+            import json
+            from google.cloud import bigquery
+            
+            credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if credentials_json:
+                credentials_info = json.loads(credentials_json)
+                project_id = credentials_info.get("project_id")
+                
+                client = bigquery.Client(project=project_id)
+                table_ref = client.get_table(f"{project_id}.{config.bigquery_dataset}.dim_products")
+                actual_records = table_ref.num_rows
+                
+                logger.info(f"✅ Verified table in BigQuery: {actual_records:,} records")
+                records_processed = actual_records
+                
+                # Get schema info
+                schema_fields = [field.name for field in table_ref.schema]
+                logger.info(f"📋 Table schema: {', '.join(schema_fields)}")
+                
+        except Exception as verify_error:
+            logger.warning(f"⚠️ Could not verify table in BigQuery: {str(verify_error)}")
+            logger.info("💡 Table may still have been created successfully")
+        
+        result = {
+            "table_name": "dim_products",
+            "status": "completed",
+            "records_processed": records_processed,
+            "source_dataset": config.staging_bigquery_dataset,
+            "target_dataset": config.bigquery_dataset,
+            "bq_table": f"{config.bigquery_dataset}.dim_products",
+            "dbt_model": "dim_products",
+            "sql_file": "models/marts/dimensions/dim_products.sql",
+            "creation_method": "dbt SQL file",
+            "dbt_stdout": dbt_result.stdout[-500:] if dbt_result.stdout else ""
+        }
+        
+        logger.info("✅ Products dimension processing completed using dbt SQL file")
+        return result
+        
+    except subprocess.TimeoutExpired:
+        error_msg = "dbt dim_products model timed out after 5 minutes"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = f"dbt dim_products model execution failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+
+
+@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
+def _2d_processing_dim_order_reviews(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process and create dimension table for order reviews using dbt SQL file
+    
+    Creates dim_order_reviews table using the separate SQL file with:
+    - review_sk (primary key - auto-incrementing)
+    - review_id (not null), order_id, review_score
+    - review_comment_title, review_comment_message
+    - review_creation_date, review_answer_timestamp
+    - Derived columns: review_sentiment, has_comment, has_answer, review_year, review_month
+    
+    Args:
+        _1_staging_to_bigquery: Result from staging to BigQuery
+        
+    Returns:
+        Order reviews dimension processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing dimension table: dim_order_reviews using dbt SQL file")
+    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
+    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
+    
+    # dbt directory
+    dbt_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec_dbt"
+
+    try:
+        # Load environment variables from .env file
+        load_dotenv('/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/.env')
+
+        # Set environment variables for dbt
+        env_vars = os.environ.copy()
+        env_vars.update({
+            'TARGET_BIGQUERY_DATASET': config.bigquery_dataset,
+            'TARGET_STAGING_DATASET': config.staging_bigquery_dataset,
+            'BQ_PROJECT_ID': os.getenv('BQ_PROJECT_ID', 'dsai-468212'),  # Use existing BQ_PROJECT_ID from .env
+        })
+        
+        logger.info("🔄 Running dbt model: dim_order_reviews...")
+        logger.info(f"Working directory: {dbt_dir}")
+        logger.info(f"Model file: models/marts/dimensions/dim_order_reviews.sql")
+        logger.info(f"Target dataset: {config.bigquery_dataset}")
+        
+        # Execute dbt run for dim_order_reviews model specifically
+        dbt_result = subprocess.run([
+            'bash', '-c', 
+            'eval "$(conda shell.bash hook)" && conda activate bec && dbt run --models dim_order_reviews --no-version-check'
+        ],
+            capture_output=True,
+            text=True,
+            cwd=dbt_dir,
+            timeout=300,  # 5 minute timeout
+            env=env_vars
+        )
+        
+        if dbt_result.returncode != 0:
+            logger.error(f"❌ dbt dim_order_reviews model failed with return code: {dbt_result.returncode}")
+            logger.error("📋 dbt error details:")
+            logger.error(f"🔍 dbt stdout:")
+            for line in dbt_result.stdout.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            logger.error(f"🔍 dbt stderr:")
+            for line in dbt_result.stderr.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            raise Exception(f"dbt dim_order_reviews model failed: {dbt_result.stderr}")
+        
+        logger.info("✅ dbt dim_order_reviews model completed successfully")
+        logger.info("📋 dbt run output:")
+        
+        # Parse dbt output to get information
+        output_lines = dbt_result.stdout.split('\n')
+        model_created = False
+        records_processed = 0
+        
+        for line in output_lines:
+            if 'dim_order_reviews' in line and ('OK created' in line or 'OK' in line):
+                model_created = True
+                logger.info(f"   ✅ {line.strip()}")
+            elif 'rows affected' in line.lower():
+                try:
+                    # Try to extract row count from dbt output
+                    import re
+                    match = re.search(r'(\d+)', line)
+                    if match:
+                        records_processed = int(match.group(1))
+                except:
+                    pass
+        
+        if not model_created:
+            logger.warning("⚠️ Could not confirm dim_order_reviews model creation from dbt output")
+        
+        # Verify the table was created in BigQuery
+        try:
+            import json
+            from google.cloud import bigquery
+            
+            credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if credentials_json:
+                credentials_info = json.loads(credentials_json)
+                project_id = credentials_info.get("project_id")
+                
+                client = bigquery.Client(project=project_id)
+                table_ref = client.get_table(f"{project_id}.{config.bigquery_dataset}.dim_order_reviews")
+                actual_records = table_ref.num_rows
+                
+                logger.info(f"✅ Verified table in BigQuery: {actual_records:,} records")
+                records_processed = actual_records
+                
+                # Get schema info
+                schema_fields = [field.name for field in table_ref.schema]
+                logger.info(f"📋 Table schema: {', '.join(schema_fields)}")
+                
+        except Exception as verify_error:
+            logger.warning(f"⚠️ Could not verify table in BigQuery: {str(verify_error)}")
+            logger.info("💡 Table may still have been created successfully")
+        
+        result = {
+            "table_name": "dim_order_reviews",
+            "status": "completed",
+            "records_processed": records_processed,
+            "source_dataset": config.staging_bigquery_dataset,
+            "target_dataset": config.bigquery_dataset,
+            "bq_table": f"{config.bigquery_dataset}.dim_order_reviews",
+            "dbt_model": "dim_order_reviews",
+            "sql_file": "models/marts/dimensions/dim_order_reviews.sql",
+            "creation_method": "dbt SQL file",
+            "dbt_stdout": dbt_result.stdout[-500:] if dbt_result.stdout else ""
+        }
+        
+        logger.info("✅ Order reviews dimension processing completed using dbt SQL file")
+        return result
+        
+    except subprocess.TimeoutExpired:
+        error_msg = "dbt dim_order_reviews model timed out after 5 minutes"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = f"dbt dim_order_reviews model execution failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+
+
+@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
+def _2e_processing_dim_payments(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process and create dimension table for payments using dbt SQL file
+    
+    Creates dim_payments table using the separate SQL file with:
+    - payment_sk (primary key - auto-incrementing)
+    - order_id (not null), payment_sequential, payment_type
+    - payment_installments, payment_value
+    - Derived columns: installment_category, payment_value_category, installment_amount
+    
+    Args:
+        _1_staging_to_bigquery: Result from staging to BigQuery
+        
+    Returns:
+        Payments dimension processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing dimension table: dim_payments using dbt SQL file")
+    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
+    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
+    
+    # dbt directory
+    dbt_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec_dbt"
+
+    try:
+        # Load environment variables from .env file
+        load_dotenv('/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/.env')
+
+        # Set environment variables for dbt
+        env_vars = os.environ.copy()
+        env_vars.update({
+            'TARGET_BIGQUERY_DATASET': config.bigquery_dataset,
+            'TARGET_STAGING_DATASET': config.staging_bigquery_dataset,
+            'BQ_PROJECT_ID': os.getenv('BQ_PROJECT_ID', 'dsai-468212'),  # Use existing BQ_PROJECT_ID from .env
+        })
+        
+        logger.info("🔄 Running dbt model: dim_payments...")
+        logger.info(f"Working directory: {dbt_dir}")
+        logger.info(f"Model file: models/marts/dimensions/dim_payments.sql")
+        logger.info(f"Target dataset: {config.bigquery_dataset}")
+        
+        # Execute dbt run for dim_payments model specifically
+        dbt_result = subprocess.run([
+            'bash', '-c', 
+            'eval "$(conda shell.bash hook)" && conda activate bec && dbt run --models dim_payments --no-version-check'
+        ],
+            capture_output=True,
+            text=True,
+            cwd=dbt_dir,
+            timeout=300,  # 5 minute timeout
+            env=env_vars
+        )
+        
+        if dbt_result.returncode != 0:
+            logger.error(f"❌ dbt dim_payments model failed with return code: {dbt_result.returncode}")
+            logger.error("📋 dbt error details:")
+            logger.error(f"🔍 dbt stdout:")
+            for line in dbt_result.stdout.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            logger.error(f"🔍 dbt stderr:")
+            for line in dbt_result.stderr.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            raise Exception(f"dbt dim_payments model failed: {dbt_result.stderr}")
+        
+        logger.info("✅ dbt dim_payments model completed successfully")
+        logger.info("📋 dbt run output:")
+        
+        # Parse dbt output to get information
+        output_lines = dbt_result.stdout.split('\n')
+        model_created = False
+        records_processed = 0
+        
+        for line in output_lines:
+            if 'dim_payments' in line and ('OK created' in line or 'OK' in line):
+                model_created = True
+                logger.info(f"   ✅ {line.strip()}")
+            elif 'rows affected' in line.lower():
+                try:
+                    # Try to extract row count from dbt output
+                    import re
+                    match = re.search(r'(\d+)', line)
+                    if match:
+                        records_processed = int(match.group(1))
+                except:
+                    pass
+        
+        if not model_created:
+            logger.warning("⚠️ Could not confirm dim_payments model creation from dbt output")
+        
+        # Verify the table was created in BigQuery
+        try:
+            import json
+            from google.cloud import bigquery
+            
+            credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if credentials_json:
+                credentials_info = json.loads(credentials_json)
+                project_id = credentials_info.get("project_id")
+                
+                client = bigquery.Client(project=project_id)
+                table_ref = client.get_table(f"{project_id}.{config.bigquery_dataset}.dim_payments")
+                actual_records = table_ref.num_rows
+                
+                logger.info(f"✅ Verified table in BigQuery: {actual_records:,} records")
+                records_processed = actual_records
+                
+                # Get schema info
+                schema_fields = [field.name for field in table_ref.schema]
+                logger.info(f"📋 Table schema: {', '.join(schema_fields)}")
+                
+        except Exception as verify_error:
+            logger.warning(f"⚠️ Could not verify table in BigQuery: {str(verify_error)}")
+            logger.info("💡 Table may still have been created successfully")
+        
+        result = {
+            "table_name": "dim_payments",
+            "status": "completed",
+            "records_processed": records_processed,
+            "source_dataset": config.staging_bigquery_dataset,
+            "target_dataset": config.bigquery_dataset,
+            "bq_table": f"{config.bigquery_dataset}.dim_payments",
+            "dbt_model": "dim_payments",
+            "sql_file": "models/marts/dimensions/dim_payments.sql",
+            "creation_method": "dbt SQL file",
+            "dbt_stdout": dbt_result.stdout[-500:] if dbt_result.stdout else ""
+        }
+        
+        logger.info("✅ Payments dimension processing completed using dbt SQL file")
+        return result
+        
+    except subprocess.TimeoutExpired:
+        error_msg = "dbt dim_payments model timed out after 5 minutes"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = f"dbt dim_payments model execution failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+
+
+@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
+def _2f_processing_dim_sellers(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process and create dimension table for sellers using dbt SQL file
+    
+    Creates dim_sellers table using the separate SQL file with:
+    - seller_sk (primary key - auto-incrementing)
+    - seller_id (not null), seller_zip_code_prefix, seller_city, seller_state
+    - Derived columns: seller_state_code, seller_location, seller_region
+    
+    Args:
+        _1_staging_to_bigquery: Result from staging to BigQuery
+        
+    Returns:
+        Sellers dimension processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing dimension table: dim_sellers using dbt SQL file")
+    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
+    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
+    
+    # dbt directory
+    dbt_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec_dbt"
+
+    try:
+        # Load environment variables from .env file
+        load_dotenv('/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/.env')
+
+        # Set environment variables for dbt
+        env_vars = os.environ.copy()
+        env_vars.update({
+            'TARGET_BIGQUERY_DATASET': config.bigquery_dataset,
+            'TARGET_STAGING_DATASET': config.staging_bigquery_dataset,
+            'BQ_PROJECT_ID': os.getenv('BQ_PROJECT_ID', 'dsai-468212'),  # Use existing BQ_PROJECT_ID from .env
+        })
+        
+        logger.info("🔄 Running dbt model: dim_sellers...")
+        logger.info(f"Working directory: {dbt_dir}")
+        logger.info(f"Model file: models/marts/dimensions/dim_sellers.sql")
+        logger.info(f"Target dataset: {config.bigquery_dataset}")
+        
+        # Execute dbt run for dim_sellers model specifically
+        dbt_result = subprocess.run([
+            'bash', '-c', 
+            'eval "$(conda shell.bash hook)" && conda activate bec && dbt run --models dim_sellers --no-version-check'
+        ],
+            capture_output=True,
+            text=True,
+            cwd=dbt_dir,
+            timeout=300,  # 5 minute timeout
+            env=env_vars
+        )
+        
+        if dbt_result.returncode != 0:
+            logger.error(f"❌ dbt dim_sellers model failed with return code: {dbt_result.returncode}")
+            logger.error("📋 dbt error details:")
+            logger.error(f"🔍 dbt stdout:")
+            for line in dbt_result.stdout.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            logger.error(f"🔍 dbt stderr:")
+            for line in dbt_result.stderr.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            raise Exception(f"dbt dim_sellers model failed: {dbt_result.stderr}")
+        
+        logger.info("✅ dbt dim_sellers model completed successfully")
+        logger.info("📋 dbt run output:")
+        
+        # Parse dbt output to get information
+        output_lines = dbt_result.stdout.split('\n')
+        model_created = False
+        records_processed = 0
+        
+        for line in output_lines:
+            if 'dim_sellers' in line and ('OK created' in line or 'OK' in line):
+                model_created = True
+                logger.info(f"   ✅ {line.strip()}")
+            elif 'rows affected' in line.lower():
+                try:
+                    # Try to extract row count from dbt output
+                    import re
+                    match = re.search(r'(\d+)', line)
+                    if match:
+                        records_processed = int(match.group(1))
+                except:
+                    pass
+        
+        if not model_created:
+            logger.warning("⚠️ Could not confirm dim_sellers model creation from dbt output")
+        
+        # Verify the table was created in BigQuery
+        try:
+            import json
+            from google.cloud import bigquery
+            
+            credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if credentials_json:
+                credentials_info = json.loads(credentials_json)
+                project_id = credentials_info.get("project_id")
+                
+                client = bigquery.Client(project=project_id)
+                table_ref = client.get_table(f"{project_id}.{config.bigquery_dataset}.dim_sellers")
+                actual_records = table_ref.num_rows
+                
+                logger.info(f"✅ Verified table in BigQuery: {actual_records:,} records")
+                records_processed = actual_records
+                
+                # Get schema info
+                schema_fields = [field.name for field in table_ref.schema]
+                logger.info(f"📋 Table schema: {', '.join(schema_fields)}")
+                
+        except Exception as verify_error:
+            logger.warning(f"⚠️ Could not verify table in BigQuery: {str(verify_error)}")
+            logger.info("💡 Table may still have been created successfully")
+        
+        result = {
+            "table_name": "dim_sellers",
+            "status": "completed",
+            "records_processed": records_processed,
+            "source_dataset": config.staging_bigquery_dataset,
+            "target_dataset": config.bigquery_dataset,
+            "bq_table": f"{config.bigquery_dataset}.dim_sellers",
+            "dbt_model": "dim_sellers",
+            "sql_file": "models/marts/dimensions/dim_sellers.sql",
+            "creation_method": "dbt SQL file",
+            "dbt_stdout": dbt_result.stdout[-500:] if dbt_result.stdout else ""
+        }
+        
+        logger.info("✅ Sellers dimension processing completed using dbt SQL file")
+        return result
+        
+    except subprocess.TimeoutExpired:
+        error_msg = "dbt dim_sellers model timed out after 5 minutes"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = f"dbt dim_sellers model execution failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+
+
+@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
+def _2g_processing_dim_customers(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process and create dimension table for customers using dbt SQL file
+    
+    Creates dim_customers table using the separate SQL file with:
+    - customer_sk (primary key - auto-incrementing)
+    - customer_id (not null), customer_unique_id, customer_zip_code_prefix
+    - customer_city, customer_state
+    - Derived columns: customer_state_code, customer_location, customer_region
+    
+    Args:
+        _1_staging_to_bigquery: Result from staging to BigQuery
+        
+    Returns:
+        Customers dimension processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing dimension table: dim_customers using dbt SQL file")
+    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
+    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
+    
+    # dbt directory
+    dbt_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec_dbt"
+
+    try:
+        # Load environment variables from .env file
+        load_dotenv('/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/.env')
+
+        # Set environment variables for dbt
+        env_vars = os.environ.copy()
+        env_vars.update({
+            'TARGET_BIGQUERY_DATASET': config.bigquery_dataset,
+            'TARGET_STAGING_DATASET': config.staging_bigquery_dataset,
+            'BQ_PROJECT_ID': os.getenv('BQ_PROJECT_ID', 'dsai-468212'),  # Use existing BQ_PROJECT_ID from .env
+        })
+        
+        logger.info("🔄 Running dbt model: dim_customers...")
+        logger.info(f"Working directory: {dbt_dir}")
+        logger.info(f"Model file: models/marts/dimensions/dim_customers.sql")
+        logger.info(f"Target dataset: {config.bigquery_dataset}")
+        
+        # Execute dbt run for dim_customers model specifically
+        dbt_result = subprocess.run([
+            'bash', '-c', 
+            'eval "$(conda shell.bash hook)" && conda activate bec && dbt run --models dim_customers --no-version-check'
+        ],
+            capture_output=True,
+            text=True,
+            cwd=dbt_dir,
+            timeout=300,  # 5 minute timeout
+            env=env_vars
+        )
+        
+        if dbt_result.returncode != 0:
+            logger.error(f"❌ dbt dim_customers model failed with return code: {dbt_result.returncode}")
+            logger.error("📋 dbt error details:")
+            logger.error(f"🔍 dbt stdout:")
+            for line in dbt_result.stdout.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            logger.error(f"🔍 dbt stderr:")
+            for line in dbt_result.stderr.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            raise Exception(f"dbt dim_customers model failed: {dbt_result.stderr}")
+        
+        logger.info("✅ dbt dim_customers model completed successfully")
+        logger.info("📋 dbt run output:")
+        
+        # Parse dbt output to get information
+        output_lines = dbt_result.stdout.split('\n')
+        model_created = False
+        records_processed = 0
+        
+        for line in output_lines:
+            if 'dim_customers' in line and ('OK created' in line or 'OK' in line):
+                model_created = True
+                logger.info(f"   ✅ {line.strip()}")
+            elif 'rows affected' in line.lower():
+                try:
+                    # Try to extract row count from dbt output
+                    import re
+                    match = re.search(r'(\d+)', line)
+                    if match:
+                        records_processed = int(match.group(1))
+                except:
+                    pass
+        
+        if not model_created:
+            logger.warning("⚠️ Could not confirm dim_customers model creation from dbt output")
+        
+        # Verify the table was created in BigQuery
+        try:
+            import json
+            from google.cloud import bigquery
+            
+            credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if credentials_json:
+                credentials_info = json.loads(credentials_json)
+                project_id = credentials_info.get("project_id")
+                
+                client = bigquery.Client(project=project_id)
+                table_ref = client.get_table(f"{project_id}.{config.bigquery_dataset}.dim_customers")
+                actual_records = table_ref.num_rows
+                
+                logger.info(f"✅ Verified table in BigQuery: {actual_records:,} records")
+                records_processed = actual_records
+                
+                # Get schema info
+                schema_fields = [field.name for field in table_ref.schema]
+                logger.info(f"📋 Table schema: {', '.join(schema_fields)}")
+                
+        except Exception as verify_error:
+            logger.warning(f"⚠️ Could not verify table in BigQuery: {str(verify_error)}")
+            logger.info("💡 Table may still have been created successfully")
+        
+        result = {
+            "table_name": "dim_customers",
+            "status": "completed",
+            "records_processed": records_processed,
+            "source_dataset": config.staging_bigquery_dataset,
+            "target_dataset": config.bigquery_dataset,
+            "bq_table": f"{config.bigquery_dataset}.dim_customers",
+            "dbt_model": "dim_customers",
+            "sql_file": "models/marts/dimensions/dim_customers.sql",
+            "creation_method": "dbt SQL file",
+            "dbt_stdout": dbt_result.stdout[-500:] if dbt_result.stdout else ""
+        }
+        
+        logger.info("✅ Customers dimension processing completed using dbt SQL file")
+        return result
+        
+    except subprocess.TimeoutExpired:
+        error_msg = "dbt dim_customers model timed out after 5 minutes"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = f"dbt dim_customers model execution failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+
+
+@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
+def _2h_processing_dim_geolocations(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Process and create dimension table for geolocations using dbt SQL file
+    
+    Creates dim_geolocations table using the separate SQL file with:
+    - geolocation_sk (primary key - auto-incrementing)
+    - geolocation_zip_code_prefix (not null), geolocation_lat, geolocation_lng
+    - geolocation_city, geolocation_state
+    - Derived columns: geolocation_state_code, geolocation_location, geolocation_region, geolocation_lat_rounded, geolocation_lng_rounded
+    
+    Args:
+        _1_staging_to_bigquery: Result from staging to BigQuery
+        
+    Returns:
+        Geolocations dimension processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing dimension table: dim_geolocations using dbt SQL file")
+    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
+    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
+    
+    # dbt directory
+    dbt_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec_dbt"
+
+    try:
+        # Load environment variables from .env file
+        load_dotenv('/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/.env')
+
+        # Set environment variables for dbt
+        env_vars = os.environ.copy()
+        env_vars.update({
+            'TARGET_BIGQUERY_DATASET': config.bigquery_dataset,
+            'TARGET_STAGING_DATASET': config.staging_bigquery_dataset,
+            'BQ_PROJECT_ID': os.getenv('BQ_PROJECT_ID', 'dsai-468212'),  # Use existing BQ_PROJECT_ID from .env
+        })
+        
+        logger.info("🔄 Running dbt model: dim_geolocations...")
+        logger.info(f"Working directory: {dbt_dir}")
+        logger.info(f"Model file: models/marts/dimensions/dim_geolocations.sql")
+        logger.info(f"Target dataset: {config.bigquery_dataset}")
+        
+        # Execute dbt run for dim_geolocations model specifically
+        dbt_result = subprocess.run([
+            'bash', '-c', 
+            'eval "$(conda shell.bash hook)" && conda activate bec && dbt run --models dim_geolocations --no-version-check'
+        ],
+            capture_output=True,
+            text=True,
+            cwd=dbt_dir,
+            timeout=300,  # 5 minute timeout
+            env=env_vars
+        )
+        
+        if dbt_result.returncode != 0:
+            logger.error(f"❌ dbt dim_geolocations model failed with return code: {dbt_result.returncode}")
+            logger.error("📋 dbt error details:")
+            logger.error(f"🔍 dbt stdout:")
+            for line in dbt_result.stdout.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            logger.error(f"🔍 dbt stderr:")
+            for line in dbt_result.stderr.split('\n')[-10:]:  # Show last 10 lines
+                if line.strip():
+                    logger.error(f"   {line.strip()}")
+            raise Exception(f"dbt dim_geolocations model failed: {dbt_result.stderr}")
+        
+        logger.info("✅ dbt dim_geolocations model completed successfully")
+        logger.info("📋 dbt run output:")
+        
+        # Parse dbt output to get information
+        output_lines = dbt_result.stdout.split('\n')
+        model_created = False
+        records_processed = 0
+        
+        for line in output_lines:
+            if 'dim_geolocations' in line and ('OK created' in line or 'OK' in line):
+                model_created = True
+                logger.info(f"   ✅ {line.strip()}")
+            elif 'rows affected' in line.lower():
+                try:
+                    # Try to extract row count from dbt output
+                    import re
+                    match = re.search(r'(\d+)', line)
+                    if match:
+                        records_processed = int(match.group(1))
+                except:
+                    pass
+        
+        if not model_created:
+            logger.warning("⚠️ Could not confirm dim_geolocations model creation from dbt output")
+        
+        # Verify the table was created in BigQuery
+        try:
+            import json
+            from google.cloud import bigquery
+            
+            credentials_json = os.getenv("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            if credentials_json:
+                credentials_info = json.loads(credentials_json)
+                project_id = credentials_info.get("project_id")
+                
+                client = bigquery.Client(project=project_id)
+                table_ref = client.get_table(f"{project_id}.{config.bigquery_dataset}.dim_geolocations")
+                actual_records = table_ref.num_rows
+                
+                logger.info(f"✅ Verified table in BigQuery: {actual_records:,} records")
+                records_processed = actual_records
+                
+                # Get schema info
+                schema_fields = [field.name for field in table_ref.schema]
+                logger.info(f"📋 Table schema: {', '.join(schema_fields)}")
+                
+        except Exception as verify_error:
+            logger.warning(f"⚠️ Could not verify table in BigQuery: {str(verify_error)}")
+            logger.info("💡 Table may still have been created successfully")
+        
+        result = {
+            "table_name": "dim_geolocations",
+            "status": "completed",
+            "records_processed": records_processed,
+            "source_dataset": config.staging_bigquery_dataset,
+            "target_dataset": config.bigquery_dataset,
+            "bq_table": f"{config.bigquery_dataset}.dim_geolocations",
+            "dbt_model": "dim_geolocations",
+            "sql_file": "models/marts/dimensions/dim_geolocations.sql",
+            "creation_method": "dbt SQL file",
+            "dbt_stdout": dbt_result.stdout[-500:] if dbt_result.stdout else ""
+        }
+        
+        logger.info("✅ Geolocations dimension processing completed using dbt SQL file")
+        return result
+        
+    except subprocess.TimeoutExpired:
+        error_msg = "dbt dim_geolocations model timed out after 5 minutes"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+    except Exception as e:
+        error_msg = f"dbt dim_geolocations model execution failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        raise Exception(error_msg)
+
+
+@asset(group_name="Transformation", deps=[
+    _1_staging_to_bigquery,
+    _2a_processing_dim_dates,
+    _2b_processing_dim_orders,
+    _2c_processing_dim_products,
+    _2d_processing_dim_order_reviews,
+    _2e_processing_dim_payments,
+    _2f_processing_dim_sellers,
+    _2g_processing_dim_customers,
+    _2h_processing_dim_geolocations
+])
+def _3_fact_order_items(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transforming data warehouse for Complete dashboard visualization
+    Reading from staging dataset and creating fact tables in production dataset
+    
+    Args:        
+        _1_staging_to_bigquery: Result from staging BigQuery transfer
+
+    Returns:
+        Fact table creation results for production data warehouse
+    """
+
+    logger = get_dagster_logger()
+
+    logger.info("🔄 Transformation - Processing BigQuery Fact Tables...")
+    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
+    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
+    
+    # Get information from _1_staging_to_bigquery result
+    bq_tables = _1_staging_to_bigquery.get("bq_tables", [])
+    table_names = _1_staging_to_bigquery.get("table_names", [])
+    
+    logger.info(f"✅ Processing data from staging: {len(bq_tables)} BigQuery staging tables available")
+
+    # Create summary based on available information
+    summary = {
+        "pipeline_status": "completed",
+        "staging_tables_processed": len(bq_tables),
+        "source_dataset": config.staging_bigquery_dataset,
+        "target_dataset": config.bigquery_dataset,
+        "staging_tables": bq_tables,
+        "production_fact_table": f"{config.bigquery_dataset}.fact_order_items"
+    }
+    
+    logger.info("🎉 Fact table processing completed successfully!")
+    logger.info(f"Processed {len(bq_tables)} staging tables for production warehouse")
+    logger.info(f"Production dataset: {config.bigquery_dataset}")
+    
+    return summary
+
+@asset(group_name="Analysis", deps=[_3_fact_order_items])
+def _4a_fact_order_payments(config: PipelineConfig, _3_fact_order_items: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create fact table for order payments
+    
+    Args:
+        _3_fact_order_items: Result from fact order items processing
+        
+    Returns:
+        Order payments fact table processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing fact table: fact_order_payments")
+    
+    result = {
+        "table_name": "fact_order_payments",
+        "status": "completed",
+        "records_processed": 0,
+        "bq_table": f"{config.bigquery_dataset}.fact_order_payments"
+    }
+    
+    logger.info("✅ Order payments fact table processing completed")
+    return result
+
+
+@asset(group_name="Analysis", deps=[_3_fact_order_items])
+def _4b_fact_order_reviews(config: PipelineConfig, _3_fact_order_items: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Create fact table for order reviews
+    
+    Args:
+        _3_fact_order_items: Result from fact order items processing
+        
+    Returns:
+        Order reviews fact table processing results
+    """
+    logger = get_dagster_logger()
+    logger.info("🔄 Processing fact table: fact_order_reviews")
+    
+    result = {
+        "table_name": "fact_order_reviews",
+        "status": "completed",
+        "records_processed": 0,
+        "bq_table": f"{config.bigquery_dataset}.fact_order_reviews"
+    }
+    
+    # Log summary metadata
+    logger.info(f"Pipeline status: success")
+    logger.info(f"Final destination: BigQuery")    
+    return result
+
+
+@asset(group_name="Summary", deps=[_4a_fact_order_payments, _4b_fact_order_reviews])
+def _5_dbt_summaries(config: PipelineConfig, _4a_fact_order_payments: Dict[str, Any], _4b_fact_order_reviews: Dict[str, Any]) -> Dict[str, Any]:
     """
     dbt Phase 2: Transform staging data into analytics-ready data marts using dbt
     
@@ -494,8 +1746,8 @@ def _2_dbt_transform_staging_to_marts(config: PipelineConfig, _1_staging_to_bigq
     logger.info("🔄 dbt PHASE 2: Transforming staging data to analytics marts...")
     
     # Change to Meltano directory where dbt is configured
-    meltano_dir = "/Applications/RF/NTU/SCTP in DSAI/s3-rds-bq-dagster/bec-meltano"
-    
+    meltano_dir = "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec-meltano"
+
     try:
         # Step 1: Run dbt deps to install any packages
         logger.info("📦 Installing dbt dependencies...")
@@ -587,364 +1839,19 @@ def _2_dbt_transform_staging_to_marts(config: PipelineConfig, _1_staging_to_bigq
         error_msg = f"dbt transformation failed: {str(e)}"
         logger.error(f"❌ {error_msg}")
         raise Exception(error_msg)
+    
+ 
 
-
-@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
-def _2a_processing_dim_date(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
+@job(name="all_assets")
+def all_assets_pipeline():
     """
-    Process and create dimension table for dates from staging to production dataset
-    
-    Args:
-        _1_staging_to_bigquery: Result from staging to BigQuery
-        
-    Returns:
-        Date dimension processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing dimension table: dim_date")
-    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
-    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
-    
-    # Create date dimension logic here
-    # This would typically involve SQL transformations from staging to production
-    result = {
-        "table_name": "dim_date",
-        "status": "completed",
-        "records_processed": 0,
-        "source_dataset": config.staging_bigquery_dataset,
-        "target_dataset": config.bigquery_dataset,
-        "bq_table": f"{config.bigquery_dataset}.dim_date"
-    }
-    
-    logger.info("✅ Date dimension processing completed")
-    return result
-
-
-@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
-def _2b_processing_dim_orders(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process and create dimension table for orders from staging to production dataset
-    
-    Args:
-        _1_staging_to_bigquery: Result from staging to BigQuery
-        
-    Returns:
-        Orders dimension processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing dimension table: dim_orders")
-    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
-    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
-    
-    result = {
-        "table_name": "dim_orders",
-        "status": "completed",
-        "records_processed": 0,
-        "source_dataset": config.staging_bigquery_dataset,
-        "target_dataset": config.bigquery_dataset,
-        "bq_table": f"{config.bigquery_dataset}.dim_orders"
-    }
-    
-    logger.info("✅ Orders dimension processing completed")
-    return result
-
-
-@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
-def _2c_processing_dim_products(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process and create dimension table for products
-    
-    Args:
-        _1_staging_to_bigquery: Result from staging to BigQuery
-        
-    Returns:
-        Products dimension processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing dimension table: dim_products")
-    
-    result = {
-        "table_name": "dim_products",
-        "status": "completed",
-        "records_processed": 0,
-        "bq_table": f"{config.bigquery_dataset}.dim_products"
-    }
-    
-    logger.info("✅ Products dimension processing completed")
-    return result
-
-
-@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
-def _2d_processing_dim_order_reviews(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process and create dimension table for order reviews
-    
-    Args:
-        _1_staging_to_bigquery: Result from staging to BigQuery
-        
-    Returns:
-        Order reviews dimension processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing dimension table: dim_order_reviews")
-    
-    result = {
-        "table_name": "dim_order_reviews",
-        "status": "completed",
-        "records_processed": 0,
-        "bq_table": f"{config.bigquery_dataset}.dim_order_reviews"
-    }
-    
-    logger.info("✅ Order reviews dimension processing completed")
-    return result
-
-
-@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
-def _2e_processing_dim_payments(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process and create dimension table for payments
-    
-    Args:
-        _1_staging_to_bigquery: Result from staging to BigQuery
-        
-    Returns:
-        Payments dimension processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing dimension table: dim_payments")
-    
-    result = {
-        "table_name": "dim_payments",
-        "status": "completed",
-        "records_processed": 0,
-        "bq_table": f"{config.bigquery_dataset}.dim_payments"
-    }
-    
-    logger.info("✅ Payments dimension processing completed")
-    return result
-
-
-@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
-def _2f_processing_dim_sellers(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process and create dimension table for sellers
-    
-    Args:
-        _1_staging_to_bigquery: Result from staging to BigQuery
-        
-    Returns:
-        Sellers dimension processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing dimension table: dim_sellers")
-    
-    result = {
-        "table_name": "dim_sellers",
-        "status": "completed",
-        "records_processed": 0,
-        "bq_table": f"{config.bigquery_dataset}.dim_sellers"
-    }
-    
-    logger.info("✅ Sellers dimension processing completed")
-    return result
-
-
-@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
-def _2g_processing_dim_customers(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process and create dimension table for customers
-    
-    Args:
-        _1_staging_to_bigquery: Result from staging to BigQuery
-        
-    Returns:
-        Customers dimension processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing dimension table: dim_customers")
-    
-    result = {
-        "table_name": "dim_customers",
-        "status": "completed",
-        "records_processed": 0,
-        "bq_table": f"{config.bigquery_dataset}.dim_customers"
-    }
-    
-    logger.info("✅ Customers dimension processing completed")
-    return result
-
-
-@asset(group_name="Transformation", deps=[_1_staging_to_bigquery])
-def _2h_processing_dim_geo_locations(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Process and create dimension table for geo locations
-    
-    Args:
-        _1_staging_to_bigquery: Result from staging to BigQuery
-        
-    Returns:
-        Geo locations dimension processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing dimension table: dim_geo_locations")
-    
-    result = {
-        "table_name": "dim_geo_locations",
-        "status": "completed",
-        "records_processed": 0,
-        "bq_table": f"{config.bigquery_dataset}.dim_geo_locations"
-    }
-    
-    logger.info("✅ Geo locations dimension processing completed")
-    return result
-
-
-@asset(group_name="Transformation", deps=[
-    _1_staging_to_bigquery,
-    _2a_processing_dim_date,
-    _2b_processing_dim_orders,
-    _2c_processing_dim_products,
-    _2d_processing_dim_order_reviews,
-    _2e_processing_dim_payments,
-    _2f_processing_dim_sellers,
-    _2g_processing_dim_customers,
-    _2h_processing_dim_geo_locations
-])
-def _3_fact_order_items(config: PipelineConfig, _1_staging_to_bigquery: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Transforming data warehouse for Complete dashboard visualization
-    Reading from staging dataset and creating fact tables in production dataset
-    
-    Args:        
-        _1_staging_to_bigquery: Result from staging BigQuery transfer
-
-    Returns:
-        Fact table creation results for production data warehouse
-    """
-
-    logger = get_dagster_logger()
-
-    logger.info("🔄 Transformation - Processing BigQuery Fact Tables...")
-    logger.info(f"Reading from staging dataset: {config.staging_bigquery_dataset}")
-    logger.info(f"Writing to production dataset: {config.bigquery_dataset}")
-    
-    # Get information from _1_staging_to_bigquery result
-    bq_tables = _1_staging_to_bigquery.get("bq_tables", [])
-    table_names = _1_staging_to_bigquery.get("table_names", [])
-    
-    logger.info(f"✅ Processing data from staging: {len(bq_tables)} BigQuery staging tables available")
-
-    # Create summary based on available information
-    summary = {
-        "pipeline_status": "completed",
-        "staging_tables_processed": len(bq_tables),
-        "source_dataset": config.staging_bigquery_dataset,
-        "target_dataset": config.bigquery_dataset,
-        "staging_tables": bq_tables,
-        "production_fact_table": f"{config.bigquery_dataset}.fact_order_items"
-    }
-    
-    logger.info("🎉 Fact table processing completed successfully!")
-    logger.info(f"Processed {len(bq_tables)} staging tables for production warehouse")
-    logger.info(f"Production dataset: {config.bigquery_dataset}")
-    
-    return summary
-
-@asset(group_name="Analysis", deps=[_3_fact_order_items])
-def _4a_fact_order_payments(config: PipelineConfig, _3_fact_order_items: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Create fact table for order payments
-    
-    Args:
-        _3_fact_order_items: Result from fact order items processing
-        
-    Returns:
-        Order payments fact table processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing fact table: fact_order_payments")
-    
-    result = {
-        "table_name": "fact_order_payments",
-        "status": "completed",
-        "records_processed": 0,
-        "bq_table": f"{config.bigquery_dataset}.fact_order_payments"
-    }
-    
-    logger.info("✅ Order payments fact table processing completed")
-    return result
-
-
-@asset(group_name="Analysis", deps=[_3_fact_order_items])
-def _4b_fact_order_reviews(config: PipelineConfig, _3_fact_order_items: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Create fact table for order reviews
-    
-    Args:
-        _3_fact_order_items: Result from fact order items processing
-        
-    Returns:
-        Order reviews fact table processing results
-    """
-    logger = get_dagster_logger()
-    logger.info("🔄 Processing fact table: fact_order_reviews")
-    
-    result = {
-        "table_name": "fact_order_reviews",
-        "status": "completed",
-        "records_processed": 0,
-        "bq_table": f"{config.bigquery_dataset}.fact_order_reviews"
-    }
-    
-    logger.info("✅ Order reviews fact table processing completed")
-    return result
-
-@asset(group_name="Visualization", deps=[_4a_fact_order_payments, _4b_fact_order_reviews])
-def _5_bigquery_to_visualization(config: PipelineConfig, _4a_fact_order_payments: Dict[str, Any], _4b_fact_order_reviews: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Generate a comprehensive summary of the entire pipeline execution
-    
-    Returns:
-        Complete pipeline execution summary with all metrics
-    """
-    logger = get_dagster_logger()
-
-    logger.info("🔄 Visualization - Processing Data for Visualization...")
-
-    summary = {
-        "pipeline_status": "completed",
-        #"source_files": len(_1_s3_to_rds["csv_files"]),
-        #"s3_files_uploaded": len(_1_s3_to_rds["s3_paths"]),
-        #"rds_tables_created": len(_1_s3_to_rds["table_names"]),
-        "bq_tables_transferred": len(_1_staging_to_bigquery["bq_tables"]),        
-        #"csv_files": _1_s3_to_rds["csv_files"],
-        #"s3_paths": _1_s3_to_rds["s3_paths"],
-        #"rds_tables": _1_s3_to_rds["table_names"],
-        "bq_tables": _1_staging_to_bigquery["bq_tables"]
-    }
-    
-    logger.info("🎉 Pipeline completed successfully!")
-    #logger.info(f"Processed {len(_1_s3_to_rds['csv_files'])} CSV files through the entire pipeline")
-
-    # Log summary metadata
-    logger.info(f"Pipeline status: success")
-    #logger.info(f"Total files processed: {len(_1_s3_to_rds['csv_files'])}")
-    #logger.info(f"Stages completed: 3")
-    logger.info(f"Final destination: BigQuery")
-    
-    return summary
-
-
-@job(name="s3_rds_bigquery_pipeline")
-def s3_rds_bq_pipeline():
-    """
-    Complete ETL pipeline: Staging → Dimensions → Analysis → Visualization
+    Complete ETL pipeline: Staging → Dimensions → Analysis → Summary
     
     This job orchestrates the entire data pipeline with proper dependencies
     and comprehensive monitoring of each stage.
     """
     # The asset dependencies are automatically handled by Dagster
-    _5_bigquery_to_visualization()
+    _5_dbt_summaries()
 
 
 # Define the Dagster definitions
@@ -953,24 +1860,24 @@ defs = Definitions(
         # Phase 1: Extraction - Supabase to BigQuery Staging
         _1_staging_to_bigquery,
         
-        # Phase 2: Transformation - dbt Analytics
-        _2_dbt_transform_staging_to_marts,
-        
         # Phase 3: Legacy Dimension Processing (keeping for compatibility)
-        _2a_processing_dim_date,
+        _2a_processing_dim_dates,
         _2b_processing_dim_orders,
         _2c_processing_dim_products,
         _2d_processing_dim_order_reviews,
         _2e_processing_dim_payments,
         _2f_processing_dim_sellers,
         _2g_processing_dim_customers,
-        _2h_processing_dim_geo_locations,
+        _2h_processing_dim_geolocations,
         _3_fact_order_items,
         _4a_fact_order_payments,
         _4b_fact_order_reviews,
-        _5_bigquery_to_visualization
-    ],
-    jobs=[s3_rds_bq_pipeline]
+        
+        # Phase 5: Transformation - dbt Analytics
+        _5_dbt_summaries
+
+    ]
+    #,jobs=[all_assets] #defined job for now just commented
 )
 
 
