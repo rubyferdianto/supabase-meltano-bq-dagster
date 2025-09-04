@@ -1,0 +1,26 @@
+version: 2
+
+sources:
+  - name: staging
+    description: "Staging models from olist_data_staging dataset"
+    database: "{{ env_var('BQ_PROJECT_ID') }}"
+    schema: "olist_data_staging"
+    tables:
+      - name: stg_customers
+        description: "Staging customers data"
+      - name: stg_orders
+        description: "Staging orders data"
+      - name: stg_order_items
+        description: "Staging order items data"
+      - name: stg_order_reviews
+        description: "Staging order reviews data"
+      - name: stg_payments
+        description: "Staging payments data"
+      - name: stg_products
+        description: "Staging products data"
+      - name: stg_sellers
+        description: "Staging sellers data"
+      - name: stg_geolocations
+        description: "Staging geolocations data"
+      - name: stg_product_category_name_translation
+        description: "Staging product category name translation data"

@@ -1,0 +1,29 @@
+version: 2
+
+sources:
+  - name: warehouse
+    description: "Warehouse models from olist_data_warehouse dataset"
+    database: "{{ env_var('BQ_PROJECT_ID') }}"
+    schema: "olist_data_warehouse"
+    tables:
+      - name: dim_customers
+        description: "Warehouse customers data"
+      - name: dim_orders
+        description: "Warehouse orders data"
+      - name: dim_order_items
+        description: "Warehouse order items data"
+      - name: dim_order_reviews
+        description: "Warehouse order reviews data"
+      - name: dim_payments
+        description: "Warehouse payments data"
+      - name: dim_products
+        description: "Warehouse products data"
+      - name: dim_sellers
+        description: "Warehouse sellers data"
+      - name: dim_geolocations
+        description: "Warehouse geolocations data"
+      - name: dim_dates
+        description: "Warehouse dates data"
+      - name: fact_order_items
+        description: "Warehouse fact order items data"
+

@@ -144,8 +144,6 @@ AWS_SECRET_ACCESS_KEY=your_secret_key
 S3_BUCKET_NAME=your-s3-bucket
 
 # Pipeline Configuration
-USE_MELTANO=true  # Use Meltano ELT (recommended)
-RDS_CLEANUP_AFTER_TRANSFER=true  # Clean RDS after BigQuery transfer
 ```
 
 ## 🔧 Development Notes

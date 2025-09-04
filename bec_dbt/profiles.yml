@@ -14,11 +14,11 @@ austin_bikeshare_demo:
 bec_dbt:
   outputs:
     dev:
-      dataset: "{{ env_var('TARGET_BIGQUERY_DATASET', 'olist_data_warehouse') }}"
+      dataset: "{{ env_var('TARGET_STAGING_DATASET', 'olist_data_staging') }}"
       job_execution_timeout_seconds: 300
       job_retries: 1
       method: service-account
-      project: "{{ env_var('BQ_PROJECT_ID', 'dsai-468212') }}"
+      project: "{{ env_var('BQ_PROJECT_ID') }}"
       keyfile: "/Applications/RF/NTU/SCTP in DSAI/supabase-meltano-bq-dagster/bec_dbt/service-account-key.json"
       location: US
       priority: interactive

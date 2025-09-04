@@ -46,3 +46,11 @@ models:
         +materialized: table
       facts:
         +materialized: table
+    
+    # Warehouse models - dimensional data warehouse tables
+    warehouse:
+      +materialized: table
+    
+    # Analytics models - One Big Table (OBT) analytics aggregations  
+    analytic:
+      +materialized: table

@@ -46,7 +46,7 @@ plugins:
     config:
       batch_size: 1000
       credentials_path: $GOOGLE_APPLICATION_CREDENTIALS_JSON
-      dataset: $TARGET_BIGQUERY_DATASET
+      dataset: $TARGET_RAW_DATASET
       denormalized: true
       flattening_enabled: true
       flattening_max_depth: 1
@@ -56,10 +56,9 @@ plugins:
   - name: target-bigquery-supabase
     inherit_from: target-bigquery
     config:
-      project: $TARGET_BIGQUERY_PROJECT
-      dataset: olist_data_staging
-      credentials_path: /Applications/RF/NTU/SCTP in 
-        DSAI/s3-rds-bq-dagster/bec-meltano/bigquery-credentials.json
+      project: $BQ_PROJECT_ID
+      dataset: $TARGET_RAW_DATASET
+      credentials_path: $GOOGLE_APPLICATION_CREDENTIALS_JSON
       overwrite: false
       method: storage_write_api
       denormalized: true

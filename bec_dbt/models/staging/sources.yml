@@ -2,138 +2,34 @@ version: 2
 
 sources:
   - name: staging
-    description: "Staging dataset from Supabase containing raw olist e-commerce data"
+    description: "Raw dataset from Supabase containing raw olist e-commerce data"
     database: "{{ env_var('BQ_PROJECT_ID') }}"
-    schema: "{{ env_var('TARGET_STAGING_DATASET', 'olist_data_staging') }}"
+    schema: "{{ env_var('TARGET_RAW_DATASET', 'olist_data_raw') }}"
+    description: "Source data from Olist e-commerce platform"
     tables:
-      - name: supabase_olist_orders_dataset
-        description: "Orders data from Supabase"
-        columns:
-          - name: order_id
-            description: "Unique identifier for orders"
-          - name: order_purchase_timestamp
-            description: "Timestamp when order was purchased"
-          - name: customer_id
-            description: "Customer identifier"
-          - name: order_status
-            description: "Current status of the order"
-            
       - name: supabase_olist_customers_dataset
-        description: "Customer data from Supabase"
-        columns:
-          - name: customer_id
-            description: "Unique customer identifier"
-          - name: customer_unique_id
-            description: "Unique customer ID across the platform"
-          - name: customer_zip_code_prefix
-            description: "Customer zip code prefix"
-          - name: customer_city
-            description: "Customer city"
-          - name: customer_state
-            description: "Customer state"
-            
-      - name: supabase_olist_products_dataset
-        description: "Product data from Supabase"
-        columns:
-          - name: product_id
-            description: "Unique product identifier"
-          - name: product_category_name
-            description: "Product category name"
-          - name: product_name_lenght
-            description: "Length of product name"
-          - name: product_description_lenght
-            description: "Length of product description"
-          - name: product_photos_qty
-            description: "Number of product photos"
-          - name: product_weight_g
-            description: "Product weight in grams"
-          - name: product_length_cm
-            description: "Product length in cm"
-          - name: product_height_cm
-            description: "Product height in cm"
-          - name: product_width_cm
-            description: "Product width in cm"
-            
-      - name: supabase_olist_order_items_dataset
-        description: "Order items data from Supabase"
-        columns:
-          - name: order_id
-            description: "Order identifier"
-          - name: order_item_id
-            description: "Order item sequence number"
-          - name: product_id
-            description: "Product identifier"
-          - name: seller_id
-            description: "Seller identifier"
-          - name: shipping_limit_date
-            description: "Shipping limit date"
-          - name: price
-            description: "Item price"
-          - name: freight_value
-            description: "Freight value"
-            
-      - name: supabase_olist_order_payments_dataset
-        description: "Order payments data from Supabase"
-        columns:
-          - name: order_id
-            description: "Order identifier"
-          - name: payment_sequential
-            description: "Payment sequence number"
-          - name: payment_type
-            description: "Payment method type"
-          - name: payment_installments
-            description: "Number of installments"
-          - name: payment_value
-            description: "Payment value"
-            
-      - name: supabase_olist_order_reviews_dataset
-        description: "Order reviews data from Supabase"
-        columns:
-          - name: review_id
-            description: "Unique review identifier"
-          - name: order_id
-            description: "Order identifier"
-          - name: review_score
-            description: "Review score (1-5)"
-          - name: review_comment_title
-            description: "Review comment title"
-          - name: review_comment_message
-            description: "Review comment message"
-          - name: review_creation_date
-            description: "Review creation date"
-          - name: review_answer_timestamp
-            description: "Review answer timestamp"
-            
-      - name: supabase_olist_sellers_dataset
-        description: "Sellers data from Supabase"
-        columns:
-          - name: seller_id
-            description: "Unique seller identifier"
-          - name: seller_zip_code_prefix
-            description: "Seller zip code prefix"
-          - name: seller_city
-            description: "Seller city"
-          - name: seller_state
-            description: "Seller state"
-            
+        description: "Customer information including location and unique identifiers"
+        
       - name: supabase_olist_geolocation_dataset
-        description: "Geolocation data from Supabase"
-        columns:
-          - name: geolocation_zip_code_prefix
-            description: "Zip code prefix"
-          - name: geolocation_lat
-            description: "Latitude"
-          - name: geolocation_lng
-            description: "Longitude"
-          - name: geolocation_city
-            description: "City name"
-          - name: geolocation_state
-            description: "State name"
-            
+        description: "Geolocation data with latitude, longitude, and location details"
+        
+      - name: supabase_olist_order_items_dataset
+        description: "Individual items within orders including product, seller, and pricing information"
+        
+      - name: supabase_olist_order_payments_dataset
+        description: "Payment information for orders including payment type and amounts"
+        
+      - name: supabase_olist_order_reviews_dataset
+        description: "Customer reviews and ratings for orders"
+        
+      - name: supabase_olist_orders_dataset
+        description: "Order header information including status, timestamps, and customer references"
+        
+      - name: supabase_olist_products_dataset
+        description: "Product catalog information including categories, dimensions, and weights"
+        
       - name: supabase_product_category_name_translation
-        description: "Product category name translations from Supabase"
-        columns:
-          - name: product_category_name
-            description: "Portuguese category name"
-          - name: product_category_name_english
-            description: "English category name"
+        description: "Translation mapping for product category names"
+        
+      - name: supabase_olist_sellers_dataset
+        description: "Seller information including location and unique identifiers"

@@ -14,6 +14,7 @@ dagster_home/
 # Ignore dbt files with sensitive data
 bec_dbt/service-account-key.json
 bec_dbt/dsai-468212-key.json
+bec_dbt/project-olist-470307.json
 bec_dbt/logs/
 bec_dbt/target/
 bec_dbt/.user.yml
