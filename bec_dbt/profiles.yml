@@ -7,7 +7,7 @@ austin_bikeshare_demo:
       location: US
       method: oauth
       priority: interactive
-      project: infinite-byte-458600-a8
+      project: project-olist-470307
       threads: 1
       type: bigquery
   target: dev
@@ -34,7 +34,7 @@ resale_flat:
       location: US
       method: oauth
       priority: interactive
-      project: infinite-byte-458600-a8
+      project: project-olist-470307
       threads: 5
       type: bigquery
   target: dev
