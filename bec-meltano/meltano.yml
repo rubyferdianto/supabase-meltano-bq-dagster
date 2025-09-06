@@ -2,127 +2,109 @@ version: 1
 default_environment: dev
 project_id: 0198cf5e-5994-79cf-b139-fa589862c550
 environments:
-- name: dev
-- name: staging
-- name: prod
+  - name: dev
+  - name: staging
+  - name: prod
 plugins:
   extractors:
-  - name: tap-mysql
-    variant: transferwise
-    pip_url: 
-      git+https://github.com/transferwise/pipelinewise.git#subdirectory=singer-connectors/tap-mysql
-    config:
-      host: bec-db-rds.cvii44gkul2j.ap-southeast-1.rds.amazonaws.com
-      database: bec-db-rds
-      user: admin
-      password: $TAP_MYSQL_PASSWORD
-      port: 3306
-  - name: tap-postgres
-    variant: meltanolabs
-    pip_url: meltanolabs-tap-postgres
-    config:
-      database: postgres
-      filter_schemas:
-      - public
-      host: aws-1-ap-southeast-1.pooler.supabase.com
-      port: 5432
-      user: postgres.royhmnxmsfichopabwsi
-      password: $TAP_POSTGRES_PASSWORD
-      max_record_count: 0
-    select:
-    - public-olist_order_items_dataset.*
-    - public-olist_order_payments_dataset.*
-    - public-olist_order_reviews_dataset.*
-    - public-olist_orders_dataset.*
-    - public-olist_products_dataset.*
-    - public-olist_sellers_dataset.*
-    - public-olist_customers_dataset.*
-    - public-olist_geolocation_dataset.*
-    - public_product_category_name_translation.*
+    - name: tap-postgres
+      variant: meltanolabs
+      pip_url: meltanolabs-tap-postgres
+      config:
+        database: postgres
+        filter_schemas:
+          - public
+        host: aws-1-ap-southeast-1.pooler.supabase.com
+        port: 5432
+        user: postgres.royhmnxmsfichopabwsi
+        password: $TAP_POSTGRES_PASSWORD
+        max_record_count: 0
+      select:
+        - public-olist_order_items_dataset.*
+        - public-olist_order_payments_dataset.*
+        - public-olist_order_reviews_dataset.*
+        - public-olist_orders_dataset.*
+        - public-olist_products_dataset.*
+        - public-olist_sellers_dataset.*
+        - public-olist_customers_dataset.*
+        - public-olist_geolocation_dataset.*
+        - public_product_category_name_translation.*
   loaders:
-  - name: target-bigquery
-    variant: z3z1ma
-    pip_url: git+https://github.com/z3z1ma/target-bigquery.git
-    config:
-      batch_size: 1000
-      credentials_path: $GOOGLE_APPLICATION_CREDENTIALS_JSON
-      dataset: $TARGET_RAW_DATASET
-      denormalized: true
-      flattening_enabled: true
-      flattening_max_depth: 1
-      method: batch_job
-      project: $TARGET_STAGING_DATASET
-      overwrite: true
-  - name: target-bigquery-supabase
-    inherit_from: target-bigquery
-    config:
-      project: $BQ_PROJECT_ID
-      dataset: $TARGET_RAW_DATASET
-      credentials_path: $GOOGLE_APPLICATION_CREDENTIALS_JSON
-      overwrite: false
-      method: storage_write_api
-      denormalized: true
-      location: US
-      fail_fast: true
-      batch_size: 1000
-      stream_maps:
-        public-olist_customers_dataset:
-          __alias__: supabase_olist_customers_dataset
-        public-olist_geolocation_dataset:
-          __alias__: supabase_olist_geolocation_dataset
-        public-olist_order_items_dataset:
-          __alias__: supabase_olist_order_items_dataset
-        public-olist_order_payments_dataset:
-          __alias__: supabase_olist_order_payments_dataset
-        public-olist_order_reviews_dataset:
-          __alias__: supabase_olist_order_reviews_dataset
-        public-olist_orders_dataset:
-          __alias__: supabase_olist_orders_dataset
-        public-olist_products_dataset:
-          __alias__: supabase_olist_products_dataset
-        public-olist_sellers_dataset:
-          __alias__: supabase_olist_sellers_dataset
-        public-product_category_name_translation:
-          __alias__: supabase_product_category_name_translation
+    - name: target-bigquery
+      variant: z3z1ma
+      pip_url: git+https://github.com/z3z1ma/target-bigquery.git
+      config:
+        batch_size: 1000
+        credentials_path: $GOOGLE_APPLICATION_CREDENTIALS_JSON
+        dataset: $TARGET_RAW_DATASET
+        denormalized: true
+        flattening_enabled: true
+        flattening_max_depth: 1
+        method: batch_job
+        project: $TARGET_STAGING_DATASET
+        overwrite: true
+    - name: target-bigquery-supabase
+      inherit_from: target-bigquery
+      config:
+        project: $BQ_PROJECT_ID
+        dataset: $TARGET_RAW_DATASET
+        credentials_path: $GOOGLE_APPLICATION_CREDENTIALS_JSON
+        overwrite: false
+        method: storage_write_api
+        denormalized: true
+        location: US
+        fail_fast: true
+        batch_size: 1000
+        stream_maps:
+          public-olist_customers_dataset:
+            __alias__: supabase_olist_customers_dataset
+          public-olist_geolocation_dataset:
+            __alias__: supabase_olist_geolocation_dataset
+          public-olist_order_items_dataset:
+            __alias__: supabase_olist_order_items_dataset
+          public-olist_order_payments_dataset:
+            __alias__: supabase_olist_order_payments_dataset
+          public-olist_order_reviews_dataset:
+            __alias__: supabase_olist_order_reviews_dataset
+          public-olist_orders_dataset:
+            __alias__: supabase_olist_orders_dataset
+          public-olist_products_dataset:
+            __alias__: supabase_olist_products_dataset
+          public-olist_sellers_dataset:
+            __alias__: supabase_olist_sellers_dataset
+          public-product_category_name_translation:
+            __alias__: supabase_product_category_name_translation
 
-# Jobs configuration
+  # Jobs configuration
   transformers:
-  - name: dbt-bigquery
-    variant: dbt-labs
-    pip_url: dbt-core~=1.3.0 dbt-bigquery~=1.3.0
-    config:
-      project_dir: transform
-      profiles_dir: transform/profiles
-      target: prod
-      source_schema: olist_data_staging
-      target_schema: olist_data_warehouse
+    - name: dbt-bigquery
+      variant: dbt-labs
+      pip_url: dbt-core~=1.3.0 dbt-bigquery~=1.3.0
+      config:
+        project_dir: transform
+        profiles_dir: transform/profiles
+        target: prod
+        source_schema: olist_data_staging
+        target_schema: olist_data_warehouse
 jobs:
-- name: rds-to-bigquery
-  tasks:
-  - tap-mysql target-bigquery
-- name: supabase-to-bigquery
-  tasks:
-  - tap-postgres target-bigquery-supabase
-- name: supabase-to-bigquery-with-transform
-  tasks:
-  - tap-postgres target-bigquery-supabase
-  - dbt-bigquery:run
-  - dbt-bigquery:test
-
+  - name: supabase-to-bigquery
+    tasks:
+      - tap-postgres target-bigquery-supabase
+  - name: supabase-to-bigquery-with-transform
+    tasks:
+      - tap-postgres target-bigquery-supabase
+      - dbt-bigquery:run
+      - dbt-bigquery:test
 # Hooks for automated cleanup
-hooks:
-  post-invoke:
-    tap-mysql:
-    - python meltano-post-hook.py
-    tap-postgres:
-    - python meltano-post-hook.py
-    target-bigquery:
-    - python meltano-post-hook.py
-    target-bigquery-supabase:
-    - python meltano-post-hook.py
-  post-run:
-    rds-to-bigquery:
-    - python meltano-post-hook.py
-    supabase-to-bigquery:
-    - python meltano-post-hook.py
-
+# Note: Hooks are commented out as meltano-post-hook.py file does not exist
+# hooks:
+#   post-invoke:
+#     tap-postgres:
+#       - python meltano-post-hook.py
+#     target-bigquery:
+#       - python meltano-post-hook.py
+#     target-bigquery-supabase:
+#       - python meltano-post-hook.py
+#   post-run:
+#     supabase-to-bigquery:
+#       - python meltano-post-hook.py

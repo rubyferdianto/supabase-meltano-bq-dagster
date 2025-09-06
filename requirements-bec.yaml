@@ -1,4 +1,4 @@
-# S3-RDS-BigQuery Complete Data Pipeline Environment
+# Supabase-Meltano-BigQuery Data Pipeline Environment
 # Python 3.11 for Meltano compatibility
 # Usage: conda env create -f requirements-bec.yaml && conda activate bec
 
@@ -12,51 +12,51 @@ dependencies:
   - python=3.11
   - numpy>=2.3.0
   - pandas>=2.3.0
-  
+
   # Development tools (conda managed)
   - pip
   - jupyter
   - ipython
-  
+
   # Install remaining packages via pip for latest versions
   - pip:
       # ===========================================
       # PRODUCTION ELT FRAMEWORK (Primary)
       # ===========================================
       - meltano>=3.7.8,<4.0.0
-      
+
       # ===========================================
       # CORE DATA PROCESSING
       # ===========================================
       - pyarrow>=21.0.0,<22.0.0
-      
+
       # ===========================================
       # DATABASE CONNECTIVITY
       # ===========================================
       - PyMySQL>=1.1.0,<2.0.0
       - SQLAlchemy>=2.0.40,<3.0.0
       - cryptography>=3.4.0
-      
+
       # ===========================================
       # GOOGLE CLOUD SERVICES
       # ===========================================
       - google-cloud-bigquery>=3.35.0,<4.0.0
       - google-auth>=2.40.0,<3.0.0
       - google-auth-oauthlib>=1.2.0,<2.0.0
-      
+
       # ===========================================
       # AWS SERVICES
       # ===========================================
       - boto3>=1.40.0,<2.0.0
       - botocore>=1.40.0,<2.0.0
       - s3fs>=2023.6.0
-      
+
       # ===========================================
       # ORCHESTRATION (Optional - for Dagster workflow)
       # ===========================================
       - dagster>=1.11.0,<2.0.0
       - dagster-webserver>=1.11.0,<2.0.0
-      
+
       # ===========================================
       # UTILITIES & CONFIGURATION
       # ===========================================
@@ -65,14 +65,13 @@ dependencies:
       - click>=8.0.0
       - fsspec>=2023.6.0
       - jsonschema>=4.20.0
-
 # ===========================================
 # SETUP INSTRUCTIONS
 # ===========================================
 # 1. Create environment: conda env create -f requirements-bec.yaml
 # 2. Activate environment: conda activate bec
 # 3. Verify installation: python --version && meltano --version
-# 
+#
 # PRODUCTION NOTES:
 # - Python 3.11 required for Meltano compatibility
 # - All versions tested in production environment
