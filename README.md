@@ -1,13 +1,15 @@
-# S3-RDS-BigQuery Complete Data Pipeline
+# Supabase-Meltano-BigQuery Data```
 
-A comprehensive end-to-end data pipeline that transfers CSV data from AWS S3 and local sources to RDS MySQL, then to Google BigQuery for analytics. Built with **Meltano ELT framework** for production-ready deployment.
+A comprehensive end-to-end data pipeline that extracts data from Supabase PostgreSQL, loads it to Google BigQuery, and transforms it using dbt for analytics. Built with **Meltano ELT framework** for production-ready deployment and **Dagster** for orchestration.
+
+**Note**: "bec" stands for "brazilian e-commerce" throughout the project naming convention.
 
 ## 🎯 Complete Data Flow
 
 ```
-CSV Files (Local/S3) → AWS RDS MySQL → Google BigQuery
+Supabase PostgreSQL → Google BigQuery → dbt Transformations
         ↓                    ↓              ↓
-   📂 Source Data      🗄️ Staging DB    📊 Analytics
+   � Raw Data         🏭 Staging DB    � Analytics
         │                    │              │
         └── Meltano ELT ──────┴──────────────┘
 ```
@@ -15,39 +17,44 @@ CSV Files (Local/S3) → AWS RDS MySQL → Google BigQuery
 ## 📋 Requirements
 
 ### Python Version
+
 - **Python 3.11** (Required for Meltano compatibility)
 - **Not compatible with Python 3.13+** (dependency conflicts)
 
 ### Recommended Setup
+
 - **Production**: Meltano ELT framework (default)
 - **Development**: Direct Python approach (fallback)
 - **Orchestration**: Dagster for workflow management
+- **Transformation**: dbt for data modeling and analytics
 
 ## 🗂️ Current Project Structure
 
 ```
-s3-rds-bq-dagster/
-├── main.py                       # 🎯 Complete pipeline orchestrator
-├── bec-aws-bq/                   # 📁 AWS & BigQuery workflows
-│   ├── setup-database.py         # 🔧 Database setup and configuration
-│   ├── s3-to-rds.py              # 📥 S3 to RDS direct import
-│   ├── rds-to-bq.py              # 📤 RDS to BigQuery transfer
-│   ├── csv-to-s3.py              # � Local CSV to S3 upload
-│   ├── verify-bigquery.py        # ✅ BigQuery data verification
-│   └── csv-imported-to-rds/      # 📂 Processed CSV files
-├── bec-meltano/                  # 📁 Production Meltano ELT pipeline
-│   ├── meltano.yml               # ⚙️ Meltano configuration
-│   ├── rds-to-bq-meltano.py      # 🚀 Meltano pipeline runner
-│   ├── delete-rds-after-load.py  # 🧹 RDS cleanup after transfer
-│   ├── meltano-post-hook.py      # 🔗 Post-transfer automation
-│   ├── plugins/                  # � Meltano extractors & loaders
-│   └── .meltano/                 # �️ Meltano state & metadata
+supabase-meltano-bq-dagster/
+├── bec_dbt/                      # 📁 dbt transformation layer
+│   ├── dbt_project.yml           # ⚙️ dbt project configuration
+│   ├── profiles.yml              # � BigQuery connection profiles
+│   ├── models/                   # 📊 dbt models
+│   │   ├── staging/              # 🧹 Raw data cleaning
+│   │   ├── warehouse/            # 🏭 Dimensional modeling
+│   │   └── analytic/             # � One Big Table analytics
+│   ├── macros/                   # 🔧 Reusable SQL macros
+│   └── README.md                 # 📖 dbt documentation
 ├── bec-dagster/                  # 🎼 Orchestration framework
 │   ├── dagster_pipeline.py       # 🎯 Dagster asset definitions
 │   ├── start_dagster.sh          # 🌐 Dagster web UI launcher
 │   └── workspace.yaml            # ⚙️ Dagster configuration
-├── .env                          # 🔐 Environment configuration (gitignored)
-├── .env.example                  # 📋 Environment template
+├── bec-meltano/                  # 📁 Production Meltano ELT pipeline
+│   ├── meltano.yml               # ⚙️ Meltano configuration
+│   ├── rds-to-bq-meltano.py      # � Meltano pipeline runner
+│   ├── delete-rds-after-load.py  # 🧹 RDS cleanup after transfer
+│   ├── meltano-post-hook.py      # 🔗 Post-transfer automation
+│   ├── plugins/                  # 🔌 Meltano extractors & loaders
+│   ├── .env.example              # 📋 Environment template
+│   ├── .env                      # 🔐 Environment configuration (gitignored)
+│   └── .meltano/                 # � Meltano state & metadata
+├── service-account-key.json # 🔑 Google Cloud service account key
 ├── requirements-bec.yaml         # 🐍 Conda environment specification (ONLY requirements file)
 └── README.md                     # 📖 This file
 ```
@@ -57,6 +64,7 @@ s3-rds-bq-dagster/
 ### 1. Environment Setup
 
 **Conda Environment (Recommended & Only Option)**
+
 ```bash
 # Create conda environment with Python 3.11 and all dependencies
 conda env create -f requirements-bec.yaml
@@ -68,26 +76,40 @@ meltano --version # Should show 3.7.8+
 ```
 
 ### 2. Configure Environment Variables
+
 ```bash
-# Copy template and edit with your credentials
-cp .env.example .env
-nano .env  # Add your database and cloud credentials
+# Copy Meltano environment template and edit with your credentials
+cp bec-meltano/.env.example bec-meltano/.env
+nano bec-meltano/.env  # Add your Supabase and BigQuery credentials
 ```
 
-### 3. Run Complete Pipeline
-```bash
-# Run all stages (database setup → CSV import → BigQuery transfer)
-python main.py
+### 3. Add Google Service Account Key
 
-# Or run individual stages
-python main.py --stage csv-s3    # CSV to S3 upload
-python main.py --stage s3-rds    # S3 to RDS import
-python main.py --stage rds-bq    # RDS to BigQuery transfer
+Place your Google Cloud service account JSON key file in the project root:
+
+```bash
+# Copy your service account key to the root directory
+cp /path/to/your/service-account-key.json ./service-account-key.json
+```
+
+**Note**: Both Meltano and dbt will read the key file path from the `GOOGLE_APPLICATION_CREDENTIALS` environment variable.
+
+### 4. Run Complete Pipeline
+
+```bash
+# Use Dagster for complete orchestration (recommended)
+cd bec-dagster/
+./start_dagster.sh
+
+# Or run Meltano ELT pipeline directly
+cd bec-meltano/
+meltano run supabase-to-bigquery-with-transform
 ```
 
 ## 🎼 Orchestration & Execution Options
 
 ### Dagster (Recommended for Development & Monitoring)
+
 ```bash
 # Start Dagster web UI
 cd bec-dagster/
@@ -97,117 +119,136 @@ cd bec-dagster/
 ```
 
 ### Meltano ELT (Production)
+
 ```bash
 # Production approach with Meltano
 cd bec-meltano/
-python rds-to-bq-meltano.py
 
-# With automatic RDS cleanup after BigQuery transfer
-python rds-to-bq-meltano.py --enable-cleanup
+# Extract from Supabase to BigQuery with dbt transformations
+meltano run supabase-to-bigquery-with-transform
+```
+
+### dbt Transformations (Data Modeling)
+
+```bash
+# Run dbt transformations
+cd bec_dbt/
+
+# Run all models
+dbt run
+
+# Run specific model layers
+dbt run --models staging    # Raw data cleaning
+dbt run --models warehouse  # Dimensional modeling
+dbt run --models analytic   # Analytics aggregations
+
+# Test data quality
+dbt test
 ```
 
 ### Direct Python (Development/Testing)
+
 ```bash
 # Direct approach for quick testing
-cd bec-aws-bq/
-python rds-to-bq.py
-```
-
-## 🐳 Docker Deployment
-
-The pipeline is optimized for Docker deployment using Meltano:
-
-```bash
 cd bec-meltano/
-# Note: Docker support available through Meltano containerization
-meltano run tap-mysql target-bigquery
+# Use Meltano commands directly for testing
+meltano run supabase-to-bigquery
 ```
 
 ## ⚙️ Configuration
 
-### Environment Variables (.env)
+### Environment Variables (bec-meltano/.env)
+
 ```bash
-# MySQL/RDS Configuration
-MYSQL_HOST=your-rds-endpoint.region.rds.amazonaws.com
-MYSQL_USERNAME=your_username
-MYSQL_PASSWORD=your_password
-MYSQL_DATABASE=your_database_name
+# Supabase PostgreSQL Configuration
+TAP_POSTGRES_PASSWORD=your_supabase_password
 
-# Google Cloud Configuration
-GCP_PROJECT=your-project-id
-BQ_DATASET=your_dataset_name
-GOOGLE_APPLICATION_CREDENTIALS_JSON='{"type": "service_account", ...}'
+# BigQuery Configuration
+BQ_PROJECT_ID=dsai-468212
+TARGET_STAGING_DATASET=olist_data_staging
+TARGET_RAW_DATASET=olist_data_raw
 
-# AWS Configuration
-AWS_ACCESS_KEY_ID=your_access_key
-AWS_SECRET_ACCESS_KEY=your_secret_key
-S3_BUCKET_NAME=your-s3-bucket
-
-# Pipeline Configuration
+# Google Cloud Service Account Key Path
+GOOGLE_APPLICATION_CREDENTIALS=../service-account-key.json
 ```
+
+### dbt Configuration
+
+- **Project**: `bec_dbt/`
+- **Profile**: `bec_dbt` (defined in `profiles.yml`)
+- **Service Account Key**: `service-account-key.json` (in project root, path set via `GOOGLE_APPLICATION_CREDENTIALS`)
+- **Target**: `dev` (BigQuery)
+- **Datasets**: `olist_data_staging`, `olist_data_warehouse`
 
 ## 🔧 Development Notes
 
 ### Python Version Compatibility
+
 - **Python 3.11**: ✅ Fully supported (recommended)
 - **Python 3.12**: ⚠️ Limited support (some dependency issues)
 - **Python 3.13+**: ❌ Not supported (major dependency conflicts)
 
 ### Production vs Development
+
 - **Production**: Use Meltano ELT framework (`bec-meltano/`) for robust, containerized deployment
-- **Development**: Use direct Python approach (`bec-aws-bq/`) for quick testing
+- **Development**: Use direct Python approach (`bec-meltano/`) for quick testing
 - **Orchestration**: Dagster (`bec-dagster/`) provides workflow management and monitoring
+- **Transformation**: dbt (`bec_dbt/`) provides data modeling and analytics
 - **CI/CD**: Meltano provides better logging, state management, and error handling
 
-### RDS Cleanup Feature
-The pipeline includes automated RDS cleanup after successful BigQuery transfer:
-- **Manual execution**: `python delete-rds-after-load.py`
-- **Automatic**: Triggered by Meltano post-hooks after successful transfer
-- **Verification**: Compares row counts between RDS and BigQuery before cleanup
-- **Safety**: Only deletes RDS data if BigQuery verification passes
+### dbt Model Layers
+
+The pipeline includes comprehensive dbt transformations:
+
+- **Staging**: Raw data cleaning, deduplication, and quality flags
+- **Warehouse**: Dimensional modeling with facts and dimensions
+- **Analytics**: One Big Table (OBT) aggregations for business intelligence
 
 ### Troubleshooting
+
 1. **Meltano installation issues**: Ensure Python 3.11 is active
-2. **BigQuery authentication**: Check GOOGLE_APPLICATION_CREDENTIALS_JSON format
-3. **RDS connection**: Verify security groups allow your IP address
-4. **Empty tables**: Check CSV files are present and S3 import completed
-5. **Hook execution**: Check `bec-meltano/post_hook.log` for cleanup logs
+2. **BigQuery authentication**: Check `GOOGLE_APPLICATION_CREDENTIALS` path in `bec-meltano/.env` points to your service account JSON file in project root
+3. **Supabase connection**: Verify `TAP_POSTGRES_PASSWORD` in `bec-meltano/.env`
+4. **dbt issues**: Check BigQuery permissions and dataset existence, verify service account key path
+5. **Pipeline execution**: Check Meltano logs in `bec-meltano/.meltano/logs/`
 
 ## 📊 Pipeline Features
 
-- ✅ **Automated database setup and configuration**
-- ✅ **Resilient S3 to RDS import with file movement tracking**
-- ✅ **Production-ready Meltano ELT framework with post-hooks**
-- ✅ **Automated RDS cleanup after successful BigQuery transfer**
+- ✅ **Supabase PostgreSQL data extraction with Meltano**
+- ✅ **Automated BigQuery loading with multiple target configurations**
+- ✅ **Production-ready Meltano ELT framework**
+- ✅ **Comprehensive dbt transformations (staging → warehouse → analytics)**
 - ✅ **Dagster orchestration with web UI monitoring**
-- ✅ **Comprehensive error handling and logging**
+- ✅ **Data quality checks and validation**
 - ✅ **Environment-based configuration**
-- ✅ **Data verification and integrity checks**
-- ✅ **State management and incremental updates**
+- ✅ **Customer segmentation and analytics macros**
 - ✅ **Multiple execution modes (production/development)**
 
 ## 🗂️ Key Components
 
-### Data Flow Scripts
-- **`bec-aws-bq/s3-to-rds.py`**: S3 to RDS MySQL import
-- **`bec-aws-bq/rds-to-bq.py`**: Direct RDS to BigQuery transfer
-- **`bec-meltano/rds-to-bq-meltano.py`**: Production Meltano pipeline
+### Meltano ELT Pipeline
 
-### Automation & Cleanup
-- **`bec-meltano/delete-rds-after-load.py`**: RDS cleanup engine with safety checks
-- **`bec-meltano/meltano-post-hook.py`**: Automated post-transfer hooks
-- **`bec-aws-bq/verify-bigquery.py`**: BigQuery data verification
+- **`bec-meltano/meltano.yml`**: Meltano configuration with Supabase and BigQuery targets
+
+### dbt Transformations
+
+- **`bec_dbt/models/staging/`**: Raw data cleaning and quality flags
+- **`bec_dbt/models/warehouse/`**: Dimensional modeling (dim*\*, fact*\*)
+- **`bec_dbt/models/analytic/`**: One Big Table analytics aggregations
+- **`bec_dbt/macros/`**: Reusable SQL macros for business logic
 
 ### Orchestration
+
 - **`bec-dagster/dagster_pipeline.py`**: Workflow orchestration assets
-- **`main.py`**: Central pipeline orchestrator
 
 ## 🤝 Contributing
 
 1. Ensure Python 3.11 conda environment: `conda activate bec`
 2. Install environment: `conda env create -f requirements-bec.yaml`
-3. Test with both Meltano and direct approaches
-4. Update documentation for any new features
+3. Set up credentials: `cp bec-meltano/.env.example bec-meltano/.env` and place your service account JSON file in project root, then set `GOOGLE_APPLICATION_CREDENTIALS` path in the .env file
+4. Test with Meltano: `meltano run supabase-to-bigquery-with-transform`
+5. Test dbt transformations: `cd bec_dbt && dbt run && dbt test`
+6. Update documentation for any new features
 
 ## 📄 License
 
