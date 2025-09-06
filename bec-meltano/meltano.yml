@@ -14,9 +14,9 @@ plugins:
         database: postgres
         filter_schemas:
           - public
-        host: aws-1-ap-southeast-1.pooler.supabase.com
+        host: $TAP_POSTGRES_HOST
         port: 5432
-        user: postgres.royhmnxmsfichopabwsi
+        user: $TAP_POSTGRES_USER
         password: $TAP_POSTGRES_PASSWORD
         max_record_count: 0
       select:
@@ -35,7 +35,7 @@ plugins:
       pip_url: git+https://github.com/z3z1ma/target-bigquery.git
       config:
         batch_size: 1000
-        credentials_path: $GOOGLE_APPLICATION_CREDENTIALS_JSON
+        credentials_path: $GOOGLE_APPLICATION_CREDENTIALS
         dataset: $TARGET_RAW_DATASET
         denormalized: true
         flattening_enabled: true
@@ -48,7 +48,7 @@ plugins:
       config:
         project: $BQ_PROJECT_ID
         dataset: $TARGET_RAW_DATASET
-        credentials_path: $GOOGLE_APPLICATION_CREDENTIALS_JSON
+        credentials_path: $GOOGLE_APPLICATION_CREDENTIALS
         overwrite: false
         method: storage_write_api
         denormalized: true
@@ -95,16 +95,3 @@ jobs:
       - tap-postgres target-bigquery-supabase
       - dbt-bigquery:run
       - dbt-bigquery:test
-# Hooks for automated cleanup
-# Note: Hooks are commented out as meltano-post-hook.py file does not exist
-# hooks:
-#   post-invoke:
-#     tap-postgres:
-#       - python meltano-post-hook.py
-#     target-bigquery:
-#       - python meltano-post-hook.py
-#     target-bigquery-supabase:
-#       - python meltano-post-hook.py
-#   post-run:
-#     supabase-to-bigquery:
-#       - python meltano-post-hook.py

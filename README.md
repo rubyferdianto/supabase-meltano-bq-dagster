@@ -1,4 +1,4 @@
-# Supabase-Meltano-BigQuery Data Pipeline
+# Supabase-Meltano-BigQuery Data```
 
 A comprehensive end-to-end data pipeline that extracts data from Supabase PostgreSQL, loads it to Google BigQuery, and transforms it using dbt for analytics. Built with **Meltano ELT framework** for production-ready deployment and **Dagster** for orchestration.
 
@@ -32,13 +32,6 @@ Supabase PostgreSQL → Google BigQuery → dbt Transformations
 
 ```
 supabase-meltano-bq-dagster/
-├── bec-meltano/                  # 📁 Production Meltano ELT pipeline
-│   ├── meltano.yml               # ⚙️ Meltano configuration
-│   ├── rds-to-bq-meltano.py      # � Meltano pipeline runner
-│   ├── delete-rds-after-load.py  # 🧹 RDS cleanup after transfer
-│   ├── meltano-post-hook.py      # 🔗 Post-transfer automation
-│   ├── plugins/                  # 🔌 Meltano extractors & loaders
-│   └── .meltano/                 # � Meltano state & metadata
 ├── bec_dbt/                      # 📁 dbt transformation layer
 │   ├── dbt_project.yml           # ⚙️ dbt project configuration
 │   ├── profiles.yml              # � BigQuery connection profiles
@@ -52,8 +45,16 @@ supabase-meltano-bq-dagster/
 │   ├── dagster_pipeline.py       # 🎯 Dagster asset definitions
 │   ├── start_dagster.sh          # 🌐 Dagster web UI launcher
 │   └── workspace.yaml            # ⚙️ Dagster configuration
-├── .env                          # 🔐 Environment configuration (gitignored)
-├── .env.example                  # 📋 Environment template
+├── bec-meltano/                  # 📁 Production Meltano ELT pipeline
+│   ├── meltano.yml               # ⚙️ Meltano configuration
+│   ├── rds-to-bq-meltano.py      # � Meltano pipeline runner
+│   ├── delete-rds-after-load.py  # 🧹 RDS cleanup after transfer
+│   ├── meltano-post-hook.py      # 🔗 Post-transfer automation
+│   ├── plugins/                  # 🔌 Meltano extractors & loaders
+│   ├── .env.example              # 📋 Environment template
+│   ├── .env                      # 🔐 Environment configuration (gitignored)
+│   └── .meltano/                 # � Meltano state & metadata
+├── service-account-key.json # 🔑 Google Cloud service account key
 ├── requirements-bec.yaml         # 🐍 Conda environment specification (ONLY requirements file)
 └── README.md                     # 📖 This file
 ```
@@ -77,12 +78,23 @@ meltano --version # Should show 3.7.8+
 ### 2. Configure Environment Variables
 
 ```bash
-# Copy template and edit with your credentials
-cp .env.example .env
-nano .env  # Add your database and cloud credentials
+# Copy Meltano environment template and edit with your credentials
+cp bec-meltano/.env.example bec-meltano/.env
+nano bec-meltano/.env  # Add your Supabase and BigQuery credentials
 ```
 
-### 3. Run Complete Pipeline
+### 3. Add Google Service Account Key
+
+Place your Google Cloud service account JSON key file in the project root:
+
+```bash
+# Copy your service account key to the root directory
+cp /path/to/your/service-account-key.json ./service-account-key.json
+```
+
+**Note**: Both Meltano and dbt will read the key file path from the `GOOGLE_APPLICATION_CREDENTIALS` environment variable.
+
+### 4. Run Complete Pipeline
 
 ```bash
 # Use Dagster for complete orchestration (recommended)
@@ -145,30 +157,26 @@ meltano run supabase-to-bigquery
 
 ## ⚙️ Configuration
 
-### Environment Variables (.env)
+### Environment Variables (bec-meltano/.env)
 
 ```bash
 # Supabase PostgreSQL Configuration
 TAP_POSTGRES_PASSWORD=your_supabase_password
-BQ_PROJECT_ID=your-bigquery-project-id
-TARGET_STAGING_DATASET=olist_data_staging
-TARGET_RAW_DATASET=olist_data_raw
-
-# Google Cloud Configuration
-GOOGLE_APPLICATION_CREDENTIALS_JSON='{"type": "service_account", ...}'
 
 # BigQuery Configuration
-BQ_PROJECT_ID=your-project-id
+BQ_PROJECT_ID=dsai-468212
 TARGET_STAGING_DATASET=olist_data_staging
 TARGET_RAW_DATASET=olist_data_raw
 
-# Pipeline Configuration
+# Google Cloud Service Account Key Path
+GOOGLE_APPLICATION_CREDENTIALS=../service-account-key.json
 ```
 
 ### dbt Configuration
 
 - **Project**: `bec_dbt/`
 - **Profile**: `bec_dbt` (defined in `profiles.yml`)
+- **Service Account Key**: `service-account-key.json` (in project root, path set via `GOOGLE_APPLICATION_CREDENTIALS`)
 - **Target**: `dev` (BigQuery)
 - **Datasets**: `olist_data_staging`, `olist_data_warehouse`
 
@@ -199,9 +207,9 @@ The pipeline includes comprehensive dbt transformations:
 ### Troubleshooting
 
 1. **Meltano installation issues**: Ensure Python 3.11 is active
-2. **BigQuery authentication**: Check GOOGLE_APPLICATION_CREDENTIALS_JSON format
-3. **Supabase connection**: Verify TAP_POSTGRES_PASSWORD and connection details
-4. **dbt issues**: Check BigQuery permissions and dataset existence
+2. **BigQuery authentication**: Check `GOOGLE_APPLICATION_CREDENTIALS` path in `bec-meltano/.env` points to your service account JSON file in project root
+3. **Supabase connection**: Verify `TAP_POSTGRES_PASSWORD` in `bec-meltano/.env`
+4. **dbt issues**: Check BigQuery permissions and dataset existence, verify service account key path
 5. **Pipeline execution**: Check Meltano logs in `bec-meltano/.meltano/logs/`
 
 ## 📊 Pipeline Features
@@ -237,9 +245,10 @@ The pipeline includes comprehensive dbt transformations:
 
 1. Ensure Python 3.11 conda environment: `conda activate bec`
 2. Install environment: `conda env create -f requirements-bec.yaml`
-3. Test with Meltano: `meltano run supabase-to-bigquery-with-transform`
-4. Test dbt transformations: `cd bec_dbt && dbt run && dbt test`
-5. Update documentation for any new features
+3. Set up credentials: `cp bec-meltano/.env.example bec-meltano/.env` and place your service account JSON file in project root, then set `GOOGLE_APPLICATION_CREDENTIALS` path in the .env file
+4. Test with Meltano: `meltano run supabase-to-bigquery-with-transform`
+5. Test dbt transformations: `cd bec_dbt && dbt run && dbt test`
+6. Update documentation for any new features
 
 ## 📄 License
 
