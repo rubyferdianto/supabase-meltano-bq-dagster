@@ -1,7 +1,7 @@
 {{ config(materialized='table') }}
 
 with source as (
-    select * from {{ source('raw', 'orders') }}
+    select * from {{ source('olist', 'orders') }}
 ),
 deduplicated as (
     select 
@@ -30,13 +30,21 @@ staging as (
         order_id,
         customer_id,
         
-        -- Business data
-        order_status,
-        order_purchase_timestamp,
-        order_approved_at,
-        order_delivered_carrier_date,
-        order_delivered_customer_date,
-        order_estimated_delivery_date,
+        -- ENHANCED COLUMNS AS PRIMARY FIELDS (warehouse gets enhanced data)
+        UPPER(TRIM(order_status)) as order_status,  -- Normalize status values
+        order_purchase_timestamp,       -- Keep timestamps as-is for accuracy
+        order_approved_at,             -- Keep timestamps as-is for accuracy
+        order_delivered_carrier_date,   -- Keep timestamps as-is for accuracy
+        order_delivered_customer_date,  -- Keep timestamps as-is for accuracy
+        order_estimated_delivery_date,  -- Keep timestamps as-is for accuracy
+        
+        -- ORIGINAL RAW DATA (with _original suffix for reference)
+        order_status as order_status_original,
+        order_purchase_timestamp as order_purchase_timestamp_original,
+        order_approved_at as order_approved_at_original,
+        order_delivered_carrier_date as order_delivered_carrier_date_original,
+        order_delivered_customer_date as order_delivered_customer_date_original,
+        order_estimated_delivery_date as order_estimated_delivery_date_original,
         
         -- Type conversions for timestamp fields
         safe_cast(order_purchase_timestamp as timestamp) as order_purchase_timestamp_clean,

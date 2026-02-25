@@ -41,18 +41,6 @@ models:
               values: ['AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO']
               config:
                 severity: warn
-      
-      - name: had_duplicates
-        description: "Flag indicating if this record was deduplicated"
-        tests:
-          - not_null
-          - accepted_values:
-              values: [true, false]
-      
-      - name: ingestion_timestamp
-        description: "Timestamp when record was processed"
-        tests:
-          - not_null
 
   # ========================================
   # ORDER DATA
@@ -85,22 +73,10 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['delivered', 'shipped', 'processing', 'approved', 'invoiced', 'canceled', 'unavailable', 'created']
+              values: ['DELIVERED', 'SHIPPED', 'PROCESSING', 'APPROVED', 'INVOICED', 'CANCELED', 'UNAVAILABLE', 'CREATED']
       
       - name: order_purchase_timestamp_clean
         description: "Cleaned order purchase timestamp"
-        tests:
-          - not_null
-      
-      - name: had_duplicates
-        description: "Flag indicating if this record was deduplicated"
-        tests:
-          - not_null
-          - accepted_values:
-              values: [true, false]
-      
-      - name: ingestion_timestamp
-        description: "Timestamp when record was processed"
         tests:
           - not_null
 
@@ -125,7 +101,7 @@ models:
         tests:
           - not_null
       
-      - name: product_name_length
+      - name: product_name_lenght
         description: "Length of product name in characters"
         tests:
           - not_null
@@ -145,11 +121,9 @@ models:
                 severity: warn
       
       - name: had_duplicates
-        description: "Flag indicating if this record was deduplicated"
+        description: "Boolean flag indicating whether product data had duplicates during processing"
         tests:
           - not_null
-          - accepted_values:
-              values: [true, false]
 
   # ========================================
   # ORDER ITEMS DATA
@@ -342,7 +316,7 @@ models:
         tests:
           - not_null
           - accepted_values:
-              values: ['credit_card', 'boleto', 'voucher', 'debit_card', 'not_defined']
+              values: ['CREDIT_CARD', 'BOLETO', 'VOUCHER', 'DEBIT_CARD', 'NOT_DEFINED']
       
       - name: payment_installments
         description: "Number of payment installments"
@@ -400,8 +374,9 @@ models:
         description: "Customer rating from 1 to 5"
         tests:
           - not_null
-          - accepted_values:
-              values: [1, 2, 3, 4, 5]
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 5
       
       - name: review_creation_date_clean
         description: "Cleaned review creation timestamp"

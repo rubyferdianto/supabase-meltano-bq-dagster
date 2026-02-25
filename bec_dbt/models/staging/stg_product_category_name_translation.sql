@@ -1,7 +1,7 @@
 {{ config(materialized='table') }}
 
 with source as (
-    select * from {{ source('raw', 'product_category_name_translation') }}
+    select * from {{ source('olist', 'product_category_name_translation') }}
 ),
 
 -- Add missing translations not present in source
@@ -19,7 +19,7 @@ missing_translations as (
     )
     where product_category_name not in (
         select distinct product_category_name 
-        from {{ source('raw', 'product_category_name_translation') }}
+        from {{ source('olist', 'product_category_name_translation') }}
         where product_category_name is not null
     )
 ),

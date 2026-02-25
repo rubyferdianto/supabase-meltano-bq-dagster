@@ -1,68 +1,69 @@
 {{ config(materialized='table') }}
 
-with source as (
-    select * from {{ source('raw', 'order_items') }}
-),
-deduplicated as (
+with source_data as (
     select 
-        *,
-        count(*) over (partition by order_id, order_item_id) as duplicate_count,
-        row_number() over (
-            partition by order_id, order_item_id
-            order by 
-                case when shipping_limit_date is not null then 0 else 1 end,
-                shipping_limit_date desc,
-                product_id
-        ) as row_num 
-    from source
-),
-unique_records as (
-    select 
-        * except(row_num),
-        case when duplicate_count > 1 then true else false end as had_duplicates
-    from deduplicated 
-    where row_num = 1
+        order_id,
+        order_item_id,
+        product_id,
+        seller_id,
+        shipping_limit_date,
+        price,
+        freight_value
+    from {{ source('olist', 'order_items') }}
 ),
 
-with_quality_flags as (
-    select
-        -- Core columns with quality checks
+enhanced_order_items as (
+    select 
+        -- PRIMARY KEYS 
         order_id,
-        case when order_id is null then true else false end as order_id_is_null,
-        case when length(trim(order_id)) = 0 then true else false end as order_id_is_empty,
-        
         order_item_id,
-        case when order_item_id is null then true else false end as order_item_id_is_null,
-        case when order_item_id < 1 then true else false end as order_item_id_invalid,
-        
         product_id,
-        case when product_id is null then true else false end as product_id_is_null,
-        case when length(trim(product_id)) = 0 then true else false end as product_id_is_empty,
-        
         seller_id,
-        case when seller_id is null then true else false end as seller_id_is_null,
-        case when length(trim(seller_id)) = 0 then true else false end as seller_id_is_empty,
         
-        shipping_limit_date,
-        case when shipping_limit_date is null then true else false end as shipping_limit_date_is_null,
-        case when shipping_limit_date < timestamp('2016-01-01 00:00:00') then true else false end as shipping_limit_date_too_old,
-        case when shipping_limit_date > current_timestamp() then true else false end as shipping_limit_date_is_future,
+        -- ENHANCED COLUMNS AS PRIMARY FIELDS (warehouse gets enhanced data)
+        shipping_limit_date,            -- Keep datetime as-is for accuracy
+        ROUND(price, 2) as price,       -- Standardize to 2 decimal places
+        ROUND(freight_value, 2) as freight_value,  -- Standardize to 2 decimal places
         
-        price,
-        case when price is null then true else false end as price_is_null,
-        case when price < 0 then true else false end as price_is_negative,
-        case when price = 0 then true else false end as price_is_zero,
-        case when price > 10000 then true else false end as price_suspiciously_high,
+        -- ORIGINAL RAW DATA (with _original suffix for reference)
+        shipping_limit_date as shipping_limit_date_original,
+        price as price_original,
+        freight_value as freight_value_original,
         
-        freight_value,
-        case when freight_value is null then true else false end as freight_value_is_null,
-        case when freight_value < 0 then true else false end as freight_value_is_negative,
-        case when freight_value > 1000 then true else false end as freight_value_suspiciously_high,
+        -- VALIDATION FLAGS (systematic boolean naming convention)
+        case when price is not null 
+             and price > 0.01 
+             and price <= 10000.00
+             then true else false end as is_valid_price,
+             
+        case when freight_value is not null 
+             and freight_value >= 0.00 
+             and freight_value <= 1000.00
+             then true else false end as is_valid_freight,
+             
+        case when order_item_id is not null 
+             and order_item_id >= 1 
+             and order_item_id <= 50
+             then true else false end as is_valid_item_sequence,
+             
+        case when shipping_limit_date is not null 
+             and shipping_limit_date >= TIMESTAMP('2016-01-01') 
+             and shipping_limit_date <= CURRENT_TIMESTAMP()
+             then true else false end as is_valid_shipping_date,
+             
+        -- COMPOSITE KEY (for advanced uniqueness testing)
+        CONCAT(
+            COALESCE(order_id, 'NULL'), '_',
+            COALESCE(CAST(order_item_id as STRING), 'NULL'), '_',
+            COALESCE(product_id, 'NULL'), '_',
+            COALESCE(seller_id, 'NULL')
+        ) as composite_key
         
-        -- Audit fields
-        had_duplicates,
-        current_timestamp() as ingestion_timestamp
-    from unique_records
+    from source_data
+    where order_id is not null
+        and order_item_id is not null
+        and product_id is not null
+        and seller_id is not null
 )
 
-select * from with_quality_flags
+select * from enhanced_order_items

@@ -1,8 +1,7 @@
-
 {{ config(materialized='table') }}
 
 with source as (
-    select * from {{ source('raw', 'order_reviews') }}
+    select * from {{ source('olist', 'order_reviews') }}
 ),
 deduplicated as (
     select 
@@ -31,12 +30,45 @@ staging as (
         review_id,
         order_id,
         
-        -- Business data
-        review_score,
-        review_comment_title,
-        review_comment_message,
-        review_creation_date,
-        review_answer_timestamp,
+        -- ENHANCED COLUMNS AS PRIMARY FIELDS (warehouse gets enhanced data)
+        CAST(review_score AS INT64) as review_score,    -- Ensure integer type for testing
+        TRIM(review_comment_title) as review_comment_title,     -- Clean whitespace
+        TRIM(review_comment_message) as review_comment_message, -- Clean whitespace
+        review_creation_date,           -- Keep datetime as-is for accuracy
+        review_answer_timestamp,        -- Keep timestamp as-is for accuracy
+        
+        -- ORIGINAL RAW DATA (with _original suffix for reference)
+        review_score as review_score_original,
+        review_comment_title as review_comment_title_original,
+        review_comment_message as review_comment_message_original,
+        review_creation_date as review_creation_date_original,
+        review_answer_timestamp as review_answer_timestamp_original,
+        
+        -- VALIDATION FLAGS (systematic boolean naming convention)
+        case when review_score is not null 
+             and review_score >= 1 
+             and review_score <= 5
+             then true else false end as is_valid_review_score,
+        case when review_comment_title is not null 
+             and LENGTH(TRIM(review_comment_title)) >= 1 
+             and LENGTH(TRIM(review_comment_title)) <= 500
+             then true else false end as is_valid_comment_title,
+        case when review_comment_message is not null 
+             and LENGTH(TRIM(review_comment_message)) >= 1 
+             and LENGTH(TRIM(review_comment_message)) <= 5000
+             then true else false end as is_valid_comment_message,
+        case when review_creation_date is not null 
+             and SAFE_CAST(review_creation_date as TIMESTAMP) is not null
+             then true else false end as is_valid_creation_date,
+        case when review_answer_timestamp is null 
+             or SAFE_CAST(review_answer_timestamp as TIMESTAMP) is not null
+             then true else false end as is_valid_answer_timestamp,
+             
+        -- COMPOSITE KEY (for advanced uniqueness testing)
+        CONCAT(
+            COALESCE(review_id, 'NULL'), '_',
+            COALESCE(order_id, 'NULL')
+        ) as composite_review_key,
         
         -- Type conversions for timestamp fields
         safe_cast(review_creation_date as timestamp) as review_creation_date_clean,

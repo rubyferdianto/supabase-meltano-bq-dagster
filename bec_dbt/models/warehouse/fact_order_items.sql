@@ -23,7 +23,7 @@ with order_items_base as (
         oi.shipping_limit_date,
         oi.price,
         oi.freight_value
-    from {{ source('staging', 'stg_order_items') }} oi
+    from {{ ref('stg_order_items') }} oi
 ),
 
 orders_base as (
@@ -32,7 +32,7 @@ orders_base as (
         o.customer_id,
         o.order_purchase_timestamp,
         o.order_status
-    from {{ source('staging', 'stg_orders') }} o
+    from {{ ref('stg_orders') }} o
 ),
 
 -- Calculate total order value for proportional allocation
@@ -50,7 +50,7 @@ payment_totals as (
         order_id,
         sum(payment_value) as total_payment_value,
         max(payment_installments) as max_payment_installments  -- Use max for the order
-    from {{ source('staging', 'stg_order_payments') }}
+    from {{ ref('stg_order_payments') }}
     group by order_id
 ),
 
@@ -59,9 +59,28 @@ reviews_agg as (
     select 
         order_id,
         max(review_score) as review_score,  -- Use max if multiple reviews
-        max({{ dbt_utils.generate_surrogate_key(['review_id']) }}) as review_sk
-    from {{ source('staging', 'stg_order_reviews') }}
+        max({{ generate_surrogate_key(['review_id']) }}) as review_sk
+    from {{ ref('stg_order_reviews') }}
     group by order_id
+),
+
+-- Pre-aggregate geolocation data for better performance
+customer_geography as (
+    select distinct
+        dc.customer_id,
+        dg.geolocation_sk as customer_geography_sk
+    from {{ ref('dim_customer') }} dc
+    left join {{ ref('dim_geolocation') }} dg 
+        on dc.customer_zip_code_prefix = dg.geolocation_zip_code_prefix
+),
+
+seller_geography as (
+    select distinct
+        ds.seller_id,
+        dg.geolocation_sk as seller_geography_sk
+    from {{ ref('dim_seller') }} ds
+    left join {{ ref('dim_geolocation') }} dg 
+        on ds.seller_zip_code_prefix = dg.geolocation_zip_code_prefix
 ),
 
 -- Join all base data
@@ -99,7 +118,7 @@ fact_with_dimensions as (
         fb.*,
         
         -- Generate fact table surrogate key
-        {{ dbt_utils.generate_surrogate_key(['fb.order_id', 'fb.order_item_id']) }} as order_item_sk,
+        {{ generate_surrogate_key(['fb.order_id', 'fb.order_item_id']) }} as order_item_sk,
         
         -- Dimension surrogate keys
         dc.customer_sk,
@@ -107,9 +126,9 @@ fact_with_dimensions as (
         ds.seller_sk,
         do.order_sk,
         
-        -- Geography surrogate keys
-        dcg.geolocation_sk as customer_geography_sk,
-        dsg.geolocation_sk as seller_geography_sk,
+        -- Geography surrogate keys - OPTIMIZED WITH PRE-AGGREGATED TABLES
+        cg.customer_geography_sk,
+        sg.seller_geography_sk,
         
         -- Payment surrogate key (first payment for the order)
         dpm.payment_sk,
@@ -130,9 +149,9 @@ fact_with_dimensions as (
     inner join {{ ref('dim_seller') }} ds on fb.seller_id = ds.seller_id
     inner join {{ ref('dim_orders') }} do on fb.order_id = do.order_id
     
-    -- Geography joins
-    left join {{ ref('dim_geolocation') }} dcg on dc.customer_zip_code_prefix = dcg.geolocation_zip_code_prefix
-    left join {{ ref('dim_geolocation') }} dsg on ds.seller_zip_code_prefix = dsg.geolocation_zip_code_prefix
+    -- Optimized geography joins using pre-aggregated tables
+    left join customer_geography cg on fb.customer_id = cg.customer_id
+    left join seller_geography sg on fb.seller_id = sg.seller_id
     
     -- Payment join (get the first payment record for the order)
     left join (

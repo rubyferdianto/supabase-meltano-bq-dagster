@@ -1,7 +1,7 @@
 {{ config(materialized='table') }}
 
 with source as (
-    select * from {{ source('raw', 'order_payments') }}
+    select * from {{ source('olist', 'order_payments') }}
 ),
 deduplicated as (
     select 
@@ -28,12 +28,40 @@ staging as (
         order_id,
         payment_sequential,
         
-        -- Business data
-        payment_type,
-        payment_installments,
-        payment_value,
+        -- ENHANCED COLUMNS AS PRIMARY FIELDS (warehouse gets enhanced data)
+        UPPER(TRIM(payment_type)) as payment_type,  -- Normalize payment types
+        payment_installments,           -- Keep installments as-is
+        ROUND(payment_value, 2) as payment_value,  -- Standardize to 2 decimal places
         
-        -- Data quality flags
+        -- ORIGINAL RAW DATA (with _original suffix for reference)
+        payment_type as payment_type_original,
+        payment_installments as payment_installments_original,
+        payment_value as payment_value_original,
+        
+        -- VALIDATION FLAGS (systematic boolean naming convention)
+        case when payment_type is not null 
+             and UPPER(TRIM(payment_type)) in ('CREDIT_CARD', 'BOLETO', 'VOUCHER', 'DEBIT_CARD', 'NOT_DEFINED')
+             then true else false end as is_valid_payment_type,
+        case when payment_installments is not null 
+             and payment_installments >= 1 
+             and payment_installments <= 24
+             then true else false end as is_valid_installments,
+        case when payment_value is not null 
+             and payment_value > 0.00 
+             and payment_value <= 50000.00
+             then true else false end as is_valid_payment_value,
+        case when payment_sequential is not null 
+             and payment_sequential >= 1 
+             and payment_sequential <= 10
+             then true else false end as is_valid_payment_sequence,
+             
+        -- COMPOSITE KEY (for advanced uniqueness testing)
+        CONCAT(
+            COALESCE(order_id, 'NULL'), '_',
+            COALESCE(CAST(payment_sequential as STRING), 'NULL')
+        ) as composite_payment_key,
+        
+        -- QUALITY FLAGS (for backwards compatibility with existing logic)
         case when order_id is null then true else false end as missing_order_id,
         case when payment_sequential is null then true else false end as missing_payment_sequential,
         case when payment_type is null then true else false end as missing_payment_type,

@@ -1,406 +1,81 @@
 {{ config(materialized='table') }}
 
-with source as (
-    select * from {{ source('raw', 'geolocation') }}
-),
-deduplicated as (
+with source_data as (
     select 
-        *,
-        count(*) over (partition by geolocation_zip_code_prefix) as duplicate_count,
-        row_number() over (
-            partition by geolocation_zip_code_prefix
-            order by 
-                case when geolocation_city is not null then 0 else 1 end,
-                case when geolocation_state is not null then 0 else 1 end,
-                case when geolocation_lat is not null then 0 else 1 end,
-                case when geolocation_lng is not null then 0 else 1 end,
-                geolocation_city
-        ) as row_num 
-    from source
-),
-unique_records as (
-    select 
-        * except(row_num),
-        case when duplicate_count > 1 then true else false end as had_duplicates
-    from deduplicated 
-    where row_num = 1
-),
-
-with_quality_flags as (
-    select
-        -- Convert ZIP code to proper 5-digit STRING format with leading zeros
-        LPAD(CAST(geolocation_zip_code_prefix AS STRING), 5, '0') as geolocation_zip_code_prefix,
-        case when geolocation_zip_code_prefix is null then true else false end as geolocation_zip_code_prefix_is_null,
-        case when geolocation_zip_code_prefix is null or SAFE_CAST(geolocation_zip_code_prefix AS INT64) < 1 OR SAFE_CAST(geolocation_zip_code_prefix AS INT64) > 99999 then true else false end as geolocation_zip_code_prefix_invalid_range,
-        case when LENGTH(LPAD(CAST(geolocation_zip_code_prefix AS STRING), 5, '0')) != 5 then true else false end as geolocation_zip_code_prefix_invalid_length,
-        
-        SAFE_CAST(geolocation_lat AS FLOAT64) as geolocation_lat,
-        case when geolocation_lat is null then true else false end as geolocation_lat_is_null,
-        case when geolocation_lat is null or SAFE_CAST(geolocation_lat AS FLOAT64) < -90 or SAFE_CAST(geolocation_lat AS FLOAT64) > 90 then true else false end as geolocation_lat_out_of_range,
-        
-        SAFE_CAST(geolocation_lng AS FLOAT64) as geolocation_lng,
-        case when geolocation_lng is null then true else false end as geolocation_lng_is_null,
-        case when geolocation_lng is null or SAFE_CAST(geolocation_lng AS FLOAT64) < -180 or SAFE_CAST(geolocation_lng AS FLOAT64) > 180 then true else false end as geolocation_lng_out_of_range,
-        
+        geolocation_zip_code_prefix,
+        geolocation_lat,
+        geolocation_lng,
         geolocation_city,
-        case when geolocation_city is null then true else false end as geolocation_city_is_null,
-        case when length(trim(geolocation_city)) = 0 then true else false end as geolocation_city_is_empty,
-        
-        geolocation_state,
-        case when geolocation_state is null then true else false end as geolocation_state_is_null,
-        case when geolocation_state not in ('SP', 'RJ', 'MG', 'RS', 'PR', 'SC', 'BA', 'GO', 'ES', 'PE', 'CE', 'PB', 'PA', 'RN', 'AL', 'MT', 'MS', 'DF', 'PI', 'SE', 'RO', 'TO', 'AC', 'AM', 'AP', 'RR') then true else false end as geolocation_state_invalid_value,
-        
-        -- Audit fields
-        had_duplicates,
-        current_timestamp() as ingestion_timestamp
-    from unique_records
+        geolocation_state
+    from {{ source('olist', 'geolocation') }}
 ),
 
--- DYNAMIC: Find missing ZIP codes from both customers AND sellers, add them with estimated coordinates
-customer_zips as (
-    select distinct
-        LPAD(CAST(customer_zip_code_prefix AS STRING), 5, '0') as zip_code_prefix,
-        LOWER(TRIM(customer_city)) as city,
-        UPPER(TRIM(customer_state)) as state,
-        'CUSTOMER' as source_type
-    from {{ ref('stg_customers')  }}
-    where customer_zip_code_prefix is not null
-        and LENGTH(LPAD(CAST(customer_zip_code_prefix AS STRING), 5, '0')) = 5
-        and customer_city is not null
-        and customer_state is not null
-),
-
-seller_zips as (
-    select distinct
-        LPAD(CAST(seller_zip_code_prefix AS STRING), 5, '0') as zip_code_prefix,
-        LOWER(TRIM(seller_city)) as city,
-        UPPER(TRIM(seller_state)) as state,
-        'SELLER' as source_type
-    from {{ ref('stg_sellers')  }}
-    where seller_zip_code_prefix is not null
-        and LENGTH(LPAD(CAST(seller_zip_code_prefix AS STRING), 5, '0')) = 5
-        and seller_city is not null
-        and seller_state is not null
-),
-
--- Combine all ZIP codes from customers and sellers
-all_business_zips as (
-    select zip_code_prefix, city, state, source_type from customer_zips
-    union all
-    select zip_code_prefix, city, state, source_type from seller_zips
-),
-
--- Deduplicate and prioritize (if same ZIP exists in both customer and seller with different city/state)
-consolidated_zips as (
+enhanced_geolocation as (
     select 
-        zip_code_prefix,
-        city,
-        state,
-        string_agg(distinct source_type order by source_type) as sources
-    from all_business_zips
-    group by zip_code_prefix, city, state
-),
-
-existing_geo_zips as (
-    select distinct geolocation_zip_code_prefix
-    from with_quality_flags
-),
-
-missing_zips as (
-    select 
-        c.zip_code_prefix,
-        c.city,
-        c.state,
-        c.sources
-    from consolidated_zips c
-    left join existing_geo_zips e 
-        on c.zip_code_prefix = e.geolocation_zip_code_prefix
-    where e.geolocation_zip_code_prefix is null
-),
-
--- Calculate city/state averages for coordinate estimation (Option 1)
-city_state_averages as (
-    select 
-        LOWER(TRIM(geo.geolocation_city)) as city_normalized,
-        UPPER(TRIM(geo.geolocation_state)) as state_normalized,
-        AVG(SAFE_CAST(geo.geolocation_lat AS FLOAT64)) as avg_lat,
-        AVG(SAFE_CAST(geo.geolocation_lng AS FLOAT64)) as avg_lng,
-        COUNT(*) as reference_count
-    from with_quality_flags geo
-    where geo.geolocation_lat is not null 
-        and geo.geolocation_lng is not null
-        and SAFE_CAST(geo.geolocation_lat AS FLOAT64) between -35 and 5  -- Brazil bounds
-        and SAFE_CAST(geo.geolocation_lng AS FLOAT64) between -75 and -30  -- Brazil bounds
-    group by 1, 2
-    having COUNT(*) >= 2  -- Only use averages with at least 2 reference points
-),
-
--- State fallback coordinates for cases where city average is not available
-state_centroids as (
-    select state, lat, lng from (
-        select 'SP' as state, -23.5505 as lat, -46.6333 as lng union all
-        select 'RJ', -22.9068, -43.1729 union all
-        select 'MG', -19.9167, -43.9345 union all
-        select 'RS', -30.0346, -51.2177 union all
-        select 'PR', -25.4284, -49.2733 union all
-        select 'SC', -27.2423, -50.2189 union all
-        select 'BA', -12.9714, -38.5014 union all
-        select 'GO', -16.6864, -49.2643 union all
-        select 'ES', -20.3155, -40.3128 union all
-        select 'PE', -8.0476, -34.8770 union all
-        select 'CE', -3.7172, -38.5433 union all
-        select 'PB', -7.1195, -34.8450 union all
-        select 'PA', -1.4558, -48.4902 union all
-        select 'RN', -5.7945, -35.2110 union all
-        select 'AL', -9.6658, -35.7350 union all
-        select 'MT', -15.6014, -56.0979 union all
-        select 'MS', -20.4697, -54.6201 union all
-        select 'DF', -15.7942, -47.8822 union all
-        select 'PI', -8.7744, -42.7019 union all
-        select 'SE', -10.9472, -37.0731 union all
-        select 'RO', -11.2451, -62.4693 union all
-        select 'TO', -10.1753, -48.2982 union all
-        select 'AC', -10.0336, -67.8099 union all
-        select 'AM', -3.4168, -65.8561 union all
-        select 'AP', 1.4093, -51.7929 union all
-        select 'RR', 1.8890, -61.2208
-    )
-),
-
--- Generate dynamic missing geolocation records with estimated coordinates (from customers AND sellers)
-dynamic_missing_locations as (
-    select
-        m.zip_code_prefix as geolocation_zip_code_prefix,
-        false as geolocation_zip_code_prefix_is_null,
-        false as geolocation_zip_code_prefix_invalid_range,
-        false as geolocation_zip_code_prefix_invalid_length,
+        -- ENHANCED COLUMNS AS PRIMARY FIELDS (warehouse gets enhanced data)
+        LPAD(CAST(geolocation_zip_code_prefix as STRING), 5, '0') as geolocation_zip_code_prefix,
+        SAFE_CAST(geolocation_lat as FLOAT64) as geolocation_lat,
+        SAFE_CAST(geolocation_lng as FLOAT64) as geolocation_lng,
+        REGEXP_REPLACE(
+            REGEXP_REPLACE(
+                REGEXP_REPLACE(
+                    TRIM(UPPER(
+                        REGEXP_REPLACE(
+                            TRANSLATE(
+                                NORMALIZE(COALESCE(geolocation_city, ''), NFD),
+                                'ÀÁÂÃÄÅàáâãäåÒÓÔÕÖØòóôõöøÈÉÊËèéêëÇçÌÍÎÏìíîïÙÚÛÜùúûüÿÑñ£',
+                                'AAAAAAaaaaaaoOOOOOoooooooEEEEeeeeeCcIIIIiiiiUUUUuuuuyNnA'
+                            ),
+                            r'[^A-Za-z\s]', ''  -- Remove any remaining special characters completely
+                        )
+                    )),
+                    r'SANO PAULO', 'SAO PAULO'  -- Fix the specific £ case
+                ),
+                r'\s+', ' '  -- Replace multiple spaces with single space
+            ),
+            r'^\s+|\s+$', ''  -- Trim leading and trailing spaces
+        ) as geolocation_city,
+        UPPER(TRIM(geolocation_state)) as geolocation_state,
         
-        -- Use city average if available, otherwise state centroid
-        COALESCE(csa.avg_lat, sc.lat, -15.7942) as geolocation_lat,  -- Brazil center as final fallback
-        false as geolocation_lat_is_null,
-        false as geolocation_lat_out_of_range,
+        -- ORIGINAL RAW DATA (with _original suffix for reference)
+        geolocation_zip_code_prefix as geolocation_zip_code_prefix_original,
+        SAFE_CAST(geolocation_lat as FLOAT64) as geolocation_lat_original,
+        SAFE_CAST(geolocation_lng as FLOAT64) as geolocation_lng_original,
+        geolocation_city as geolocation_city_original,
+        geolocation_state as geolocation_state_original,
         
-        COALESCE(csa.avg_lng, sc.lng, -47.8822) as geolocation_lng,  -- Brazil center as final fallback
-        false as geolocation_lng_is_null,
-        false as geolocation_lng_out_of_range,
+        -- VALIDATION FLAGS (for advanced quality testing)
+        case when geolocation_zip_code_prefix is not null 
+             and REGEXP_CONTAINS(LPAD(CAST(geolocation_zip_code_prefix as STRING), 5, '0'), r'^[0-9]{5}$')
+             then true else false end as valid_zip_code,
+             
+        case when geolocation_lat is not null 
+             and SAFE_CAST(geolocation_lat as FLOAT64) between -35.0 and 5.0
+             then true else false end as valid_lat_brazil,
+             
+        case when geolocation_lng is not null 
+             and SAFE_CAST(geolocation_lng as FLOAT64) between -75.0 and -30.0
+             then true else false end as valid_lng_brazil,
+             
+        case when geolocation_city is not null 
+             and LENGTH(TRIM(geolocation_city)) >= 2
+             then true else false end as valid_city,
+             
+        case when geolocation_state is not null 
+             and UPPER(TRIM(geolocation_state)) in ('AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO')
+             then true else false end as valid_state,
+             
+        -- COMPOSITE KEYS (for advanced uniqueness testing)
+        CONCAT(
+            COALESCE(LPAD(CAST(geolocation_zip_code_prefix as STRING), 5, '0'), 'NULL'), '_',
+            COALESCE(CAST(geolocation_lat as STRING), 'NULL'), '_',
+            COALESCE(CAST(geolocation_lng as STRING), 'NULL')
+        ) as composite_geo_key
         
-        m.city as geolocation_city,
-        false as geolocation_city_is_null,
-        false as geolocation_city_is_empty,
-        
-        m.state as geolocation_state,
-        false as geolocation_state_is_null,
-        case when m.state not in ('SP', 'RJ', 'MG', 'RS', 'PR', 'SC', 'BA', 'GO', 'ES', 'PE', 'CE', 'PB', 'PA', 'RN', 'AL', 'MT', 'MS', 'DF', 'PI', 'SE', 'RO', 'TO', 'AC', 'AM', 'AP', 'RR') then true else false end as geolocation_state_invalid_value,
-        
-        true as had_duplicates,  -- Mark as synthetic/estimated (also tracks source with m.sources)
-        current_timestamp() as ingestion_timestamp
-    from missing_zips m
-    left join city_state_averages csa 
-        on csa.city_normalized = m.city 
-        and csa.state_normalized = m.state
-    left join state_centroids sc 
-        on sc.state = m.state
-),
-
-combined_data as (
-    select * from with_quality_flags
-    union all
-    select * from dynamic_missing_locations
-),
-
--- APPENDED: Advanced Data Validation and Automatic Fixing Logic
-data_quality_assessment as (
-    select 
-        *,
-        -- Additional ZIP Code Validation
-        case 
-            when geolocation_zip_code_prefix is null then 'ZIP_NULL'
-            when not regexp_contains(geolocation_zip_code_prefix, r'^[0-9]{5}$') then 'ZIP_INVALID_FORMAT'
-            when SAFE_CAST(geolocation_zip_code_prefix as int64) < 1000 then 'ZIP_TOO_LOW'
-            when SAFE_CAST(geolocation_zip_code_prefix as int64) > 99999 then 'ZIP_TOO_HIGH'
-            else 'ZIP_VALID'
-        end as zip_validation_status,
-        
-        -- Advanced City Validation
-        case 
-            when geolocation_city is null then 'CITY_NULL'
-            when length(trim(geolocation_city)) = 0 then 'CITY_EMPTY'
-            when length(trim(geolocation_city)) < 2 then 'CITY_TOO_SHORT'
-            when regexp_contains(geolocation_city, r'[0-9]') then 'CITY_CONTAINS_NUMBERS'
-            when regexp_contains(geolocation_city, r'[^a-zA-Z\s\-\'àáâãäçèéêëìíîïñòóôõöùúûüýÿÀÁÂÃÄÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝŸ]') then 'CITY_INVALID_CHARS'
-            else 'CITY_VALID'
-        end as city_validation_status,
-        
-        -- Advanced State Validation
-        case 
-            when geolocation_state is null then 'STATE_NULL'
-            when length(trim(geolocation_state)) != 2 then 'STATE_WRONG_LENGTH'
-            when not regexp_contains(geolocation_state, r'^[A-Za-z]{2}$') then 'STATE_INVALID_FORMAT'
-            when upper(trim(geolocation_state)) not in (
-                'SP', 'RJ', 'MG', 'RS', 'PR', 'SC', 'BA', 'GO', 'ES', 'PE', 'CE', 'PB', 
-                'PA', 'RN', 'AL', 'MT', 'MS', 'DF', 'PI', 'SE', 'RO', 'TO', 'AC', 'AM', 'AP', 'RR'
-            ) then 'STATE_NOT_BRAZILIAN'
-            else 'STATE_VALID'
-        end as state_validation_status,
-        
-        -- Enhanced Coordinate Validation (Brazil-specific bounds)
-        case 
-            when geolocation_lat is null then 'LAT_NULL'
-            when SAFE_CAST(geolocation_lat AS FLOAT64) < -35 or SAFE_CAST(geolocation_lat AS FLOAT64) > 5 then 'LAT_OUT_OF_BRAZIL_BOUNDS'
-            else 'LAT_VALID'
-        end as lat_validation_status,
-        
-        case 
-            when geolocation_lng is null then 'LNG_NULL'
-            when SAFE_CAST(geolocation_lng AS FLOAT64) < -75 or SAFE_CAST(geolocation_lng AS FLOAT64) > -30 then 'LNG_OUT_OF_BRAZIL_BOUNDS'
-            else 'LNG_VALID'
-        end as lng_validation_status
-    from combined_data
-),
-
--- State correction lookup table
-state_corrections as (
-    select state_input, state_corrected from (
-        select 'sp' as state_input, 'SP' as state_corrected union all
-        select 'rj', 'RJ' union all
-        select 'mg', 'MG' union all
-        select 'rs', 'RS' union all
-        select 'pr', 'PR' union all
-        select 'sc', 'SC' union all
-        select 'ba', 'BA' union all
-        select 'go', 'GO' union all
-        select 'es', 'ES' union all
-        select 'pe', 'PE' union all
-        select 'ce', 'CE' union all
-        select 'pb', 'PB' union all
-        select 'pa', 'PA' union all
-        select 'rn', 'RN' union all
-        select 'al', 'AL' union all
-        select 'mt', 'MT' union all
-        select 'ms', 'MS' union all
-        select 'df', 'DF' union all
-        select 'pi', 'PI' union all
-        select 'se', 'SE' union all
-        select 'ro', 'RO' union all
-        select 'to', 'TO' union all
-        select 'ac', 'AC' union all
-        select 'am', 'AM' union all
-        select 'ap', 'AP' union all
-        select 'rr', 'RR' union all
-        -- Common typos
-        select 'SO', 'SP' union all
-        select 'RG', 'RJ' union all
-        select 'BR', 'DF'
-    )
-),
-
--- Apply automatic data fixes
-enhanced_cleaned_data as (
-    select 
-        -- Enhanced ZIP code cleaning
-        case 
-            when zip_validation_status = 'ZIP_INVALID_FORMAT' and regexp_contains(geolocation_zip_code_prefix, r'^[0-9]+') then 
-                lpad(regexp_extract(geolocation_zip_code_prefix, r'^([0-9]+)'), 5, '0')
-            when zip_validation_status in ('ZIP_TOO_LOW', 'ZIP_TOO_HIGH', 'ZIP_NULL') then null
-            else geolocation_zip_code_prefix
-        end as geolocation_zip_code_prefix_enhanced,
-        
-        -- Enhanced city cleaning
-        case 
-            when city_validation_status in ('CITY_NULL', 'CITY_EMPTY', 'CITY_TOO_SHORT') then null
-            when city_validation_status = 'CITY_CONTAINS_NUMBERS' then 
-                trim(regexp_replace(lower(geolocation_city), r'[0-9]', ''))
-            when city_validation_status = 'CITY_INVALID_CHARS' then 
-                trim(regexp_replace(lower(geolocation_city), r'[^a-zA-Z\s\-\'àáâãäçèéêëìíîïñòóôõöùúûüýÿÀÁÂÃÄÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝŸ]', ''))
-            else lower(trim(geolocation_city))
-        end as geolocation_city_enhanced,
-        
-        -- Enhanced state cleaning
-        case 
-            when state_validation_status = 'STATE_NULL' then null
-            when state_validation_status in ('STATE_WRONG_LENGTH', 'STATE_INVALID_FORMAT', 'STATE_NOT_BRAZILIAN') then 
-                coalesce(sc.state_corrected, upper(trim(geolocation_state)))
-            else upper(trim(geolocation_state))
-        end as geolocation_state_enhanced,
-        
-        -- Enhanced coordinate cleaning (set out-of-bounds to NULL)
-        case 
-            when lat_validation_status in ('LAT_NULL', 'LAT_OUT_OF_BRAZIL_BOUNDS') then null
-            else SAFE_CAST(geolocation_lat AS FLOAT64)
-        end as geolocation_lat_enhanced,
-        
-        case 
-            when lng_validation_status in ('LNG_NULL', 'LNG_OUT_OF_BRAZIL_BOUNDS') then null
-            else SAFE_CAST(geolocation_lng AS FLOAT64)
-        end as geolocation_lng_enhanced,
-        
-        -- Enhanced audit trail
-        array_to_string(
-            array(
-                select x from unnest([
-                    case when zip_validation_status != 'ZIP_VALID' then zip_validation_status else null end,
-                    case when city_validation_status != 'CITY_VALID' then city_validation_status else null end,
-                    case when state_validation_status != 'STATE_VALID' then state_validation_status else null end,
-                    case when lat_validation_status != 'LAT_VALID' then lat_validation_status else null end,
-                    case when lng_validation_status != 'LNG_VALID' then lng_validation_status else null end
-                ]) as x where x is not null
-            ), '|'
-        ) as data_issues_detected,
-        
-        -- Keep original validation flags and other fields
-        *
-        
-    from data_quality_assessment dqa
-    left join state_corrections sc on lower(trim(dqa.geolocation_state)) = sc.state_input
-),
-
--- Final enhanced output with comprehensive quality flags
-final_enhanced_output as (
-    select 
-        -- Use enhanced cleaned fields
-        geolocation_zip_code_prefix_enhanced as geolocation_zip_code_prefix,
-        geolocation_city_enhanced as geolocation_city,
-        geolocation_state_enhanced as geolocation_state,
-        geolocation_lat_enhanced as geolocation_lat,
-        geolocation_lng_enhanced as geolocation_lng,
-        
-        -- Enhanced quality flags
-        case when geolocation_zip_code_prefix_enhanced is null then true else false end as geolocation_zip_code_prefix_is_null_enhanced,
-        case when geolocation_city_enhanced is null then true else false end as geolocation_city_is_null_enhanced,
-        case when geolocation_state_enhanced is null then true else false end as geolocation_state_is_null_enhanced,
-        case when geolocation_lat_enhanced is null then true else false end as geolocation_lat_is_null_enhanced,
-        case when geolocation_lng_enhanced is null then true else false end as geolocation_lng_is_null_enhanced,
-        
-        -- Enhanced coordinate validation (Brazil-specific)
-        case when geolocation_lat_enhanced is null or geolocation_lat_enhanced < -35 or geolocation_lat_enhanced > 5 then true else false end as geolocation_lat_out_of_brazil_bounds,
-        case when geolocation_lng_enhanced is null or geolocation_lng_enhanced < -75 or geolocation_lng_enhanced > -30 then true else false end as geolocation_lng_out_of_brazil_bounds,
-        
-        -- Enhanced state validation
-        case when geolocation_state_enhanced not in (
-            'SP', 'RJ', 'MG', 'RS', 'PR', 'SC', 'BA', 'GO', 'ES', 'PE', 'CE', 'PB', 
-            'PA', 'RN', 'AL', 'MT', 'MS', 'DF', 'PI', 'SE', 'RO', 'TO', 'AC', 'AM', 'AP', 'RR'
-        ) then true else false end as geolocation_state_invalid_value_enhanced,
-        
-        -- Data cleaning audit flags
-        case when data_issues_detected is not null and length(data_issues_detected) > 0 then true else false end as data_was_cleaned,
-        data_issues_detected as cleaning_log,
-        
-        -- Keep existing audit fields
-        had_duplicates,
-        ingestion_timestamp,
-        
-        -- Keep original quality flags for comparison
-        geolocation_zip_code_prefix_is_null,
-        geolocation_city_is_null,
-        geolocation_state_is_null,
-        geolocation_lat_is_null,
-        geolocation_lng_is_null,
-        geolocation_lat_out_of_range,
-        geolocation_lng_out_of_range,
-        geolocation_state_invalid_value
-        
-    from enhanced_cleaned_data
-    where geolocation_zip_code_prefix_enhanced is not null  -- Only keep records with valid ZIP codes
+    from source_data
+    where geolocation_zip_code_prefix is not null
+        and geolocation_lat is not null 
+        and geolocation_lng is not null
 )
 
-select * from final_enhanced_output
+select * from enhanced_geolocation

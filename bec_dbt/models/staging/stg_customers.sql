@@ -1,55 +1,56 @@
 {{ config(materialized='table') }}
 
-with source as (
-    select * from {{ source('raw', 'customers') }}
-),
-deduplicated as (
+with source_data as (
     select 
-        *,
-        count(*) over (partition by customer_id) as duplicate_count,
-        row_number() over (
-            partition by customer_id 
-            order by 
-                case when customer_unique_id is not null then 0 else 1 end,
-                customer_unique_id
-        ) as row_num 
-    from source
-),
-unique_records as (
-    select 
-        * except(row_num),
-        case when duplicate_count > 1 then true else false end as had_duplicates
-    from deduplicated 
-    where row_num = 1
+        customer_id,
+        customer_unique_id,
+        customer_zip_code_prefix,
+        customer_city,
+        customer_state
+    from {{ source('olist', 'customers') }}
 ),
 
-with_quality_flags as (
-    select
-        -- Core columns with quality checks
+enhanced_customers as (
+    select 
+        -- PRIMARY KEYS (warehouse compatibility - exactly as warehouse expects)
         customer_id,
-        case when customer_id is null then true else false end as customer_id_is_null,
-        
         customer_unique_id,
-        case when customer_unique_id is null then true else false end as customer_unique_id_is_null,
         
-        -- Convert ZIP code to proper 5-digit STRING format with leading zeros
-        LPAD(CAST(customer_zip_code_prefix AS STRING), 5, '0') as customer_zip_code_prefix,
-        case when customer_zip_code_prefix is null then true else false end as customer_zip_code_prefix_is_null,
-        case when CAST(customer_zip_code_prefix AS INT64) < 1 OR CAST(customer_zip_code_prefix AS INT64) > 99999 then true else false end as customer_zip_code_prefix_invalid_range,
-        case when LENGTH(LPAD(CAST(customer_zip_code_prefix AS STRING), 5, '0')) != 5 then true else false end as customer_zip_code_prefix_invalid_length,
+        -- ENHANCED COLUMNS (warehouse gets improved quality data automatically)
+        LPAD(CAST(customer_zip_code_prefix as STRING), 5, '0') as customer_zip_code_prefix,
+        REGEXP_REPLACE(
+            TRIM(UPPER(NORMALIZE(customer_city, NFD))), 
+            r'[\\u0300-\\u036f]', 
+            ''
+        ) as customer_city,
+        UPPER(TRIM(customer_state)) as customer_state,
         
-        customer_city,
-        case when customer_city is null then true else false end as customer_city_is_null,
-        case when length(trim(customer_city)) = 0 then true else false end as customer_city_is_empty,
+        -- ORIGINAL BACKUP COLUMNS (raw data preserved with _original suffix)
+        customer_zip_code_prefix as customer_zip_code_prefix_original,
+        customer_city as customer_city_original,
+        customer_state as customer_state_original,
         
-        customer_state,
-        case when customer_state is null then true else false end as customer_state_is_null,
-        case when customer_state not in ('SP', 'RJ', 'MG', 'RS', 'PR', 'SC', 'BA', 'GO', 'ES', 'PE', 'CE', 'PB', 'PA', 'RN', 'AL', 'MT', 'MS', 'DF', 'PI', 'SE', 'RO', 'TO', 'AC', 'AM', 'AP', 'RR') then true else false end as customer_state_invalid_value,
+        -- VALIDATION FLAGS (systematic boolean naming convention)
+        case when customer_zip_code_prefix is not null 
+             and REGEXP_CONTAINS(LPAD(CAST(customer_zip_code_prefix as STRING), 5, '0'), r'^[0-9]{5}$')
+             then true else false end as is_valid_zip_code,
+             
+        case when customer_city is not null 
+             and LENGTH(TRIM(customer_city)) >= 2
+             then true else false end as is_valid_city,
+             
+        case when customer_state is not null 
+             and UPPER(TRIM(customer_state)) in ('AC', 'AL', 'AP', 'AM', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MT', 'MS', 'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO')
+             then true else false end as is_valid_state,
+             
+        -- COMPOSITE KEYS (for advanced uniqueness testing)
+        CONCAT(
+            COALESCE(customer_id, 'NULL'), '_',
+            COALESCE(LPAD(CAST(customer_zip_code_prefix as STRING), 5, '0'), 'NULL'), '_',
+            COALESCE(UPPER(TRIM(customer_state)), 'NULL')
+        ) as composite_customer_key
         
-        -- Audit fields
-        had_duplicates,
-        current_timestamp() as ingestion_timestamp
-    from unique_records
+    from source_data
 )
 
-select * from with_quality_flags
+select * from enhanced_customers

@@ -1,7 +1,7 @@
 {{ config(materialized='table') }}
 
 with source as (
-    select * from {{ source('raw', 'products') }}
+    select * from {{ source('olist', 'products') }}
 ),
 deduplicated as (
     select 
@@ -27,62 +27,45 @@ unique_records as (
 
 with_quality_flags as (
     select
-        -- Core columns with quality checks
+        -- Primary key
         product_id,
-        case when product_id is null then true else false end as product_id_is_null,
-        case when length(trim(product_id)) = 0 then true else false end as product_id_is_empty,
         
-        -- Apply NULL handling transformations
+        -- ENHANCED COLUMNS AS PRIMARY FIELDS (warehouse gets enhanced data)
         coalesce(product_category_name, 'unknown') as product_category_name,
-        case when product_category_name is null then true else false end as product_category_name_is_null,
-        case when length(trim(product_category_name)) = 0 then true else false end as product_category_name_is_empty,
-        
-        -- Rename misspelled source columns to correct names and handle NULLs
-        coalesce(product_name_lenght, -1) as product_name_length,
-        case when product_name_lenght is null then true else false end as product_name_length_is_null,
-        case when product_name_lenght < 0 then true else false end as product_name_length_is_negative,
-        case when product_name_lenght = 0 then true else false end as product_name_length_is_zero,
-        case when product_name_lenght > 500 then true else false end as product_name_length_suspiciously_high,
-        
-        -- Rename misspelled source columns to correct names and handle NULLs
-        coalesce(product_description_lenght, -1) as product_description_length,
-        case when product_description_lenght is null then true else false end as product_description_length_is_null,
-        case when product_description_lenght < 0 then true else false end as product_description_length_is_negative,
-        case when product_description_lenght > 10000 then true else false end as product_description_length_suspiciously_high,
-        
-        -- Handle NULL for product_photos_qty (set to 0)
+        coalesce(product_name_lenght, -1) as product_name_lenght,        -- Keep original misspelling for compatibility
+        coalesce(product_description_lenght, -1) as product_description_lenght,  -- Keep original misspelling
         coalesce(product_photos_qty, 0) as product_photos_qty,
-        case when product_photos_qty is null then true else false end as product_photos_qty_is_null,
-        case when product_photos_qty < 0 then true else false end as product_photos_qty_is_negative,
-        case when product_photos_qty > 50 then true else false end as product_photos_qty_suspiciously_high,
+        coalesce(product_weight_g, 0) as product_weight_g,               -- Default to 0 for missing weights
+        coalesce(product_length_cm, 0) as product_length_cm,             -- Default to 0 for missing dimensions
+        coalesce(product_height_cm, 0) as product_height_cm,
+        coalesce(product_width_cm, 0) as product_width_cm,
         
-        -- Keep NULL values for weight and dimensions (no change)
-        product_weight_g,
-        case when product_weight_g is null then true else false end as product_weight_g_is_null,
-        case when product_weight_g < 0 then true else false end as product_weight_g_is_negative,
-        case when product_weight_g = 0 then true else false end as product_weight_g_is_zero,
-        case when product_weight_g > 50000 then true else false end as product_weight_g_suspiciously_high,
+        -- ORIGINAL RAW DATA (with _original suffix for reference)
+        product_category_name as product_category_name_original,
+        product_name_lenght as product_name_lenght_original,
+        product_description_lenght as product_description_lenght_original,
+        product_photos_qty as product_photos_qty_original,
+        product_weight_g as product_weight_g_original,
+        product_length_cm as product_length_cm_original,
+        product_height_cm as product_height_cm_original,
+        product_width_cm as product_width_cm_original,
         
-        -- Keep NULL values for dimensions (no change)
-        product_length_cm,
-        case when product_length_cm is null then true else false end as product_length_cm_is_null,
-        case when product_length_cm < 0 then true else false end as product_length_cm_is_negative,
-        case when product_length_cm = 0 then true else false end as product_length_cm_is_zero,
-        case when product_length_cm > 300 then true else false end as product_length_cm_suspiciously_high,
+        -- VALIDATION FLAGS (systematic boolean naming convention)
+        case when product_id is null then false else true end as is_valid_product_id,
+        case when product_category_name is null then false else true end as is_valid_category,
+        case when product_name_lenght is null or product_name_lenght < 0 then false else true end as is_valid_name_length,
+        case when product_description_lenght is null or product_description_lenght < 0 then false else true end as is_valid_description_length,
+        case when product_photos_qty is null or product_photos_qty < 0 then false else true end as is_valid_photos_qty,
+        case when product_weight_g is null or product_weight_g <= 0 or product_weight_g > 50000 then false else true end as is_valid_weight,
+        case when product_length_cm is null or product_length_cm <= 0 or product_length_cm > 300 then false else true end as is_valid_length,
+        case when product_height_cm is null or product_height_cm <= 0 or product_height_cm > 300 then false else true end as is_valid_height,
+        case when product_width_cm is null or product_width_cm <= 0 or product_width_cm > 300 then false else true end as is_valid_width,
         
-        -- Keep NULL values for dimensions (no change)
-        product_height_cm,
-        case when product_height_cm is null then true else false end as product_height_cm_is_null,
-        case when product_height_cm < 0 then true else false end as product_height_cm_is_negative,
-        case when product_height_cm = 0 then true else false end as product_height_cm_is_zero,
-        case when product_height_cm > 300 then true else false end as product_height_cm_suspiciously_high,
-        
-        -- Keep NULL values for dimensions (no change)
-        product_width_cm,
-        case when product_width_cm is null then true else false end as product_width_cm_is_null,
-        case when product_width_cm < 0 then true else false end as product_width_cm_is_negative,
-        case when product_width_cm = 0 then true else false end as product_width_cm_is_zero,
-        case when product_width_cm > 300 then true else false end as product_width_cm_suspiciously_high,
+        -- COMPOSITE KEY (for advanced uniqueness testing)
+        CONCAT(
+            COALESCE(product_id, 'NULL'), '_',
+            COALESCE(product_category_name, 'NULL')
+        ) as composite_product_key,
         
         -- Audit fields
         had_duplicates,
